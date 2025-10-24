@@ -1,4 +1,4 @@
-# bot.py (FINAL CODE - No more traceback errors)
+# bot.py (FULL UPDATED CODE with all features)
 
 import os
 import time
@@ -11,9 +11,14 @@ import aiohttp
 import aiofiles
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import Config
+from database import db  # Database import kiya gaya
+
+# Dictionaries ko yahan define karna hai
+multi_clients = {}
+work_loads = {}
 
 # --- Bot Initialization ---
 bot = Client(
@@ -24,26 +29,13 @@ bot = Client(
     workers=100
 )
 
-# In-memory dictionaries
-multi_clients = {}
-work_loads = {}
-# YEH NAYI DICTIONARY HAI ID STORE KARNE KE LIYE
-link_db = {}
-
-
+# --- Multi-Client Initialization ---
 class TokenParser:
-    # ... (Yeh poora class same rahega, koi change nahi)
     @staticmethod
     def parse_from_env():
-        return {
-            c + 1: t
-            for c, (_, t) in enumerate(
-                filter(lambda n: n[0].startswith("MULTI_TOKEN"), sorted(os.environ.items()))
-            )
-        }
+        return { c + 1: t for c, (_, t) in enumerate(filter(lambda n: n[0].startswith("MULTI_TOKEN"), sorted(os.environ.items()))) }
 
 async def start_client(client_id, bot_token):
-    # ... (Yeh poora function same rahega, koi change nahi)
     try:
         print(f"Attempting to start Client: {client_id}")
         client = await Client(
@@ -61,7 +53,6 @@ async def start_client(client_id, bot_token):
         print(f"!!! CRITICAL ERROR: Failed to start Client {client_id} - Error: {e}")
 
 async def initialize_clients(main_bot_instance):
-    # ... (Yeh poora function same rahega, koi change nahi)
     multi_clients[0] = main_bot_instance
     work_loads[0] = 0
     
@@ -80,7 +71,7 @@ async def initialize_clients(main_bot_instance):
     else:
         print("Single Client Mode.")
 
-# --- Helper Functions (Same as before) ---
+# --- Helper Functions ---
 def get_readable_file_size(size_in_bytes):
     if not size_in_bytes: return '0B'
     power, n = 1024, 0
@@ -99,40 +90,51 @@ async def edit_message_with_retry(message, text):
         print(f"Error editing message: {e}")
 
 # --- Bot Handlers ---
-print("Bot script loaded. Handlers are being registered...")
-
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(client, message: Message):
-    await message.reply_text("Hello! Send me a file or a direct download URL to get a shareable link.")
+    user_name = message.from_user.first_name
+    start_text = f"""
+👋 **Hello, {user_name}!**
+
+Welcome to Sharing Box Bot. I can help you create permanent, shareable links for your files.
+
+**How to use me:**
+1.  **Send me any file:** Just send or forward any file to this chat.
+2.  **Send me a URL:** Use the `/url <direct_download_link>` command to upload from a link.
+
+I will instantly give you a special link that you can share with anyone!
+"""
+    await message.reply_text(start_text)
 
 async def handle_file_upload(message: Message, user_id: int):
     try:
         sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL)
         unique_id = secrets.token_urlsafe(8)
         
-        # YAHAN BADLAV HAI: ID ko in-memory dictionary mein save karna
-        link_db[unique_id] = sent_message.id
+        # Link ko permanent banane ke liye database mein save karein
+        await db.save_link(unique_id, sent_message.id)
         
         show_link = f"{Config.BASE_URL}/show/{unique_id}"
 
-        # Hum ab log channel use nahi karenge, isliye isse comment kar diya
-        # log_text = (f"...")
-        # await bot.send_message(Config.LOG_CHANNEL, log_text)
+        # Button banayein
+        button = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(text="Open Your Link 🔗", url=show_link)]]
+        )
 
-        await message.reply_text(f"Here is your shareable link:\n`{show_link}`", quote=True)
-
+        await message.reply_text(
+            text=f"✅ Your shareable link has been generated!",
+            reply_markup=button,
+            quote=True
+        )
     except Exception as e:
         error_trace = traceback.format_exc()
         print(f"!!! ERROR in handle_file_upload: {e}\n{error_trace}")
-        await message.reply_text("Sorry, something went wrong.")
-
+        await message.reply_text("Sorry, something went wrong. Please try again later.")
 
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def file_handler(client, message: Message):
     await handle_file_upload(message, message.from_user.id)
-    
-# Baaki ka URL handler same rahega
-# ... (rest of the file is the same)
+
 @bot.on_message(filters.command("url") & filters.private)
 async def url_upload_handler(client, message: Message):
     if len(message.command) < 2:
@@ -165,7 +167,7 @@ async def url_upload_handler(client, message: Message):
         await status_msg.edit_text(f"Download Error: {e}")
         if os.path.exists(file_path): os.remove(file_path)
         return
-
+    
     last_edit_time = 0
     async def progress(current, total):
         nonlocal last_edit_time
