@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pyrogram
+tgcrypto
+python-dotenv
+aiohttp
+aiofiles
+jinja2
+python-magic
+zlib-fast
