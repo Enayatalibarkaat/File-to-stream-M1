@@ -11,9 +11,14 @@ class Config:
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
     OWNER_ID = int(os.environ.get("OWNER_ID", 0))
     
-    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", 0))
-    STORAGE_CHANNEL = int(os.environ.get("STORAGE_CHANNEL", 0))
+    # ID ke bajaye ab LINK use karenge
+    LOG_CHANNEL_LINK = os.environ.get("LOG_CHANNEL_LINK", "")
+    STORAGE_CHANNEL_LINK = os.environ.get("STORAGE_CHANNEL_LINK", "")
     
     BASE_URL = os.environ.get("BASE_URL", "").rstrip('/')
     DATABASE_URL = os.environ.get("DATABASE_URL", "")
     BLOGGER_PAGE_URL = os.environ.get("BLOGGER_PAGE_URL", "")
+    
+    # Yeh variables hum code ke andar set karenge
+    LOG_CHANNEL = 0
+    STORAGE_CHANNEL = 0
