@@ -1,10 +1,10 @@
-# webserver.py (FINAL-FINAL VERSION)
+# webserver.py (THE REAL FINAL VERSION - NO MORE ERRORS)
 
 import math
 import traceback
 import os
 from contextlib import asynccontextmanager
-from typing import Optional # Yeh naya import hai
+from typing import Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -13,27 +13,38 @@ from pyrogram import raw, Client
 from pyrogram.session import Session, Auth
 
 from config import Config
-from bot import bot, initialize_clients, multi_clients, work_loads, get_readable_file_size, link_db
+# --- YAHAN BADLAV HAI: link_db ko bot se import nahi karna ---
+from bot import bot, initialize_clients, multi_clients, work_loads, get_readable_file_size
+# --- YAHAN BADLAV HAI: db se link_db ko import karna (indirectly) ---
+from database import db
 
-# ... (Lifespan, app, templates, class_cache, root, mask_filename, ByteStreamer - yeh sab kuch same rahega)...
-
+# --- Lifespan Manager (Starts and Stops the Bot with the Server) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Web server is starting up..."); await bot.start(); print("Main bot started.")
-    print("Initializing clients..."); await initialize_clients(bot); print("All clients initialized. Application startup complete.")
+    print("Web server is starting up...")
+    print("Starting bot...")
+    await bot.start()
+    print("Main bot started.")
+    print("Initializing clients...")
+    await initialize_clients(bot)
+    print("All clients initialized. Application startup complete.")
     yield
-    print("Web server is shutting down..."); 
-    if bot.is_initialized: await bot.stop()
+    print("Web server is shutting down...")
+    if bot.is_initialized:
+        await bot.stop()
     print("Bot stopped.")
 
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 class_cache = {}
 
+# --- Health Check Route ---
 @app.api_route("/", methods=["GET", "HEAD"])
-async def root(): return {"status": "ok"}
+async def root():
+    return {"status": "ok", "message": "Server is healthy and running!"}
 
-def mask_filename(name: str):
+# --- Helper function for masking filename ---
+def mask_filename(name: str) -> str:
     if not name: return "Protected File"
     resolutions = ["2160p", "1080p", "720p", "480p", "360p"]
     res_part = ""
@@ -44,7 +55,6 @@ def mask_filename(name: str):
     return f"{masked_base}{res_part}{ext}"
 
 class ByteStreamer:
-    # ... (ByteStreamer ka code same rahega, isko chhedne ki zaroorat nahi)
     def __init__(self, client: Client): self.client = client
     @staticmethod
     async def get_location(file_id: FileId): return raw.types.InputDocumentFileLocation(id=file_id.media_id, access_hash=file_id.access_hash, file_reference=file_id.file_reference, thumb_size=file_id.thumbnail_size)
@@ -82,8 +92,10 @@ async def show_file_page(request: Request, unique_id: str):
     try:
         storage_msg_id = await db.get_link(unique_id)
         if not storage_msg_id: raise HTTPException(404, "Link expired or invalid.")
+        
         main_bot = multi_clients.get(0)
         if not main_bot: raise HTTPException(503, "Bot not initialized.")
+        
         file_msg = await main_bot.get_messages(Config.STORAGE_CHANNEL, storage_msg_id)
         media = file_msg.document or file_msg.video or file_msg.audio
         if not media: raise HTTPException(404, "File media not found.")
@@ -94,8 +106,8 @@ async def show_file_page(request: Request, unique_id: str):
         mime_type = media.mime_type or "application/octet-stream"
         is_media = mime_type.startswith("video/") or mime_type.startswith("audio/")
         
-        # --- YAHAN BADLAV HAI: DL link mein ab file ka naam bhi jaayega ---
-        dl_link = f"{Config.BASE_URL}/dl/{storage_msg_id}/{original_file_name}"
+        # --- YAHAN FINAL LINK BINA FILE NAME KE HAI ---
+        dl_link = f"{Config.BASE_URL}/dl/{storage_msg_id}"
         
         context = {
             "request": request, "file_name": masked_name, "file_size": file_size,
@@ -104,15 +116,13 @@ async def show_file_page(request: Request, unique_id: str):
             "vlc_player_link": f"vlc://{dl_link}"
         }
         return templates.TemplateResponse("show.html", context)
-    except Exception: print(f"Error in /show: {traceback.format_exc()}"); raise HTTPException(500)
+                
+    except Exception:
+        print(f"Error in /show: {traceback.format_exc()}"); raise HTTPException(500)
 
-# --- YAHAN BADLAV HAI: file_name ko optional banaya gaya hai ---
-@app.get("/dl/{msg_id}/{file_name:path}")
-async def stream_handler(request: Request, msg_id: int, file_name: Optional[str] = None):
-    # file_name parameter ab URL mein zaroori nahi hai, lekin agar hoga toh
-    # hum use ignore kar denge. Isse logs saaf rehte hain.
-    # Player aur browser ko file name 'Content-Disposition' header se mil jaayega.
-    
+# --- YAHAN FINAL STREAMING ROUTE BINA FILE NAME KE HAI ---
+@app.get("/dl/{msg_id}")
+async def stream_handler(request: Request, msg_id: int):
     range_header = request.headers.get("Range", 0)
     
     index = min(work_loads, key=work_loads.get, default=0)
@@ -131,7 +141,6 @@ async def stream_handler(request: Request, msg_id: int, file_name: Optional[str]
             raise FileNotFoundError
 
         media = message.document or message.video or message.audio
-        
         file_id = FileId.decode(media.file_id)
         file_size = media.file_size
         
