@@ -1,3 +1,5 @@
+# config.py (FULL UPDATED CODE)
+
 import os
 from dotenv import load_dotenv
 
@@ -13,3 +15,6 @@ class Config:
     STORAGE_CHANNEL = int(os.environ.get("STORAGE_CHANNEL"))
     
     BASE_URL = os.environ.get("BASE_URL").rstrip('/')
+    
+    # Yeh nayi line add hui hai
+    DATABASE_URL = os.environ.get("DATABASE_URL")
