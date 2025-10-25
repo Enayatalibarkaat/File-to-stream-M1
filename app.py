@@ -1,4 +1,4 @@
-# app.py (THE ABSOLUTE FINAL, ROCK-SOLID FULL CODE)
+# app.py (THE ABSOLUTE FINAL, PROFESSIONAL STRUCTURE)
 
 import os
 import asyncio
@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import aiofiles
-from pyrogram import Client, filters, idle, enums
+from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from pyrogram.errors import FloodWait
 from fastapi import FastAPI, Request, HTTPException
@@ -24,10 +24,55 @@ import math
 from config import Config
 from database import db
 
-# --- Global Variables and Initialization ---
-app = FastAPI()
+# --- Global Variables and Lifespan Manager ---
+
+@asyncio.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manages the startup and shutdown of the Pyrogram bot.
+    This runs before the web server starts accepting requests.
+    """
+    print("--- Lifespan event: STARTUP ---")
+    
+    await db.connect()
+    
+    try:
+        print("Starting Pyrogram client in background...")
+        await bot.start()
+        print(f"Bot [@{bot.me.username}] started successfully.")
+        
+        print(f"Verifying channel access for {Config.STORAGE_CHANNEL}...")
+        await bot.get_chat(Config.STORAGE_CHANNEL)
+        print("✅ Channel is accessible.")
+        
+        # Run startup cleanup. If it fails, log the error but don't crash.
+        try:
+            await cleanup_channel(bot)
+        except Exception as e:
+            print(f"Warning: Initial channel cleanup failed, but continuing startup. Error: {e}")
+
+        multi_clients[0] = bot
+        work_loads[0] = 0
+        
+        print("--- Lifespan startup complete. Bot is running in the background. ---")
+    except Exception as e:
+        print(f"!!! FATAL ERROR during bot startup in lifespan: {traceback.format_exc()}")
+    
+    yield
+    
+    print("--- Lifespan event: SHUTDOWN ---")
+    if bot.is_initialized:
+        await bot.stop()
+    print("--- Lifespan shutdown complete ---")
+
+# Initialize FastAPI app with the lifespan manager
+app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
+
+# Initialize Pyrogram Bot Client
 bot = Client("SimpleStreamBot", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.BOT_TOKEN, in_memory=True)
+
+# Global Dictionaries
 multi_clients = {}
 work_loads = {}
 class_cache = {}
@@ -83,13 +128,13 @@ async def url_upload_handler(_, message: Message):
             async with aiofiles.open(file_path, 'wb') as f:
                 async for c in r.content.iter_chunked(1024*1024): await f.write(c)
     except Exception as e:
-        await status_msg.edit_text(f"Error: {e}");
-        if os.path.exists(file_path): os.remove(file_path); return
+        await status_msg.edit_text(f"Error: {e}")
+        if os.path.exists(file_path): os.remove(file_path)
+        return
     try:
         sent_message = await bot.send_document(Config.STORAGE_CHANNEL, file_path); await handle_file_upload(sent_message, message.from_user.id); await status_msg.delete()
     finally:
         if os.path.exists(file_path): os.remove(file_path)
-
 
 # --- SIMPLE & RELIABLE GATEKEEPER LOGIC ---
 
@@ -106,7 +151,6 @@ async def simple_gatekeeper(client: Client, member_update: ChatMemberUpdated):
     except Exception as e: print(f"Gatekeeper Error: {e}")
 
 async def cleanup_channel(client: Client):
-    """Cleans up unauthorized members on startup (Robust Version)."""
     print("Gatekeeper: Running initial channel cleanup...")
     allowed_members = {Config.OWNER_ID, client.me.id}
     try:
@@ -182,55 +226,7 @@ async def stream_media(r:Request,mid:int,fname:str):
 
 # --- Main Execution Block ---
 
-async def main():
-    """Starts Bot and Web Server together."""
-    print("--- Initializing Services ---")
-    
-    await db.connect()
-    
-    try:
-        print("Starting main bot...")
-        await bot.start()
-    except FloodWait as e:
-        print(f"!!! FloodWait of {e.value}s received. Sleeping..."); await asyncio.sleep(e.value + 5); await bot.start()
-        
-    print(f"Bot [@{bot.me.username}] started successfully.")
-    
-    try:
-        print(f"Verifying channel access for {Config.STORAGE_CHANNEL}...")
-        await bot.get_chat(Config.STORAGE_CHANNEL)
-        print("✅ Channel is accessible.")
-    except Exception as e:
-        print(f"\n❌❌❌ FATAL: Could not access STORAGE_CHANNEL. Error: {e}\n"); return
-
-    # --- ROBUST STARTUP CLEANUP ---
-    try:
-        await cleanup_channel(bot)
-    except Exception as e:
-        print(f"Warning: Initial channel cleanup failed, but continuing startup. Error: {e}")
-
-    multi_clients[0] = bot
-    work_loads[0] = 0
-
-    port = int(os.environ.get("PORT", 8000))
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
-    server = uvicorn.Server(config)
-    
-    print("\nStarting web server...")
-    print("✅✅✅ All services are up and running! ✅✅✅\n")
-    
-    loop = asyncio.get_event_loop()
-    bot_task = loop.create_task(idle())
-    web_server_task = loop.create_task(server.serve())
-    await asyncio.gather(bot_task, web_server_task)
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Shutdown signal received.")
-    finally:
-        print("--- Services are shutting down ---")
-        if bot.is_initialized:
-            asyncio.run(bot.stop())
-        print("Shutdown complete.")
+    port = int(os.environ.get("PORT", 8000))
+    # Uvicorn ab main process hai aur woh 'lifespan' ko aaram se manage karega.
+    uvicorn.run(app, host="0.0.0.0", port=port)
