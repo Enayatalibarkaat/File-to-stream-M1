@@ -1,4 +1,4 @@
-# bot.py (FINAL UPDATED VERSION)
+# bot.py (FINAL "IN-MEMORY" UPDATED CODE)
 
 import os
 import asyncio
@@ -13,18 +13,20 @@ work_loads = {}
 plugins = dict(root="plugins")
 
 # Bot client ko define karo
+# 'workdir' ko hata kar 'in_memory=True' kar diya gaya hai.
+# Isse session file disk par nahi banegi, saari cheezein RAM mein rahengi.
+# Yeh Render jaise platforms ke liye sabse reliable tareeka hai.
 bot = Client(
     name="SimpleStreamBot",
     api_id=Config.API_ID,
     api_hash=Config.API_HASH,
     bot_token=Config.BOT_TOKEN,
     workers=100,
-    plugins=plugins,  # Yahan plugins ko register kiya gaya hai
-    workdir="sessions" # Session files ke liye alag folder
+    plugins=plugins,
+    in_memory=True
 )
 
 # --- Central Helper Function ---
-# Yeh function ab yahan hai taaki dusri files ise yahan se import kar sakein
 def get_readable_file_size(size_in_bytes):
     """ Human-readable file size return karta hai (e.g., 10.24 MB). """
     if not size_in_bytes: return '0B'
@@ -53,14 +55,13 @@ async def start_client(client_id, bot_token):
     """ Ek naye client bot ko start karta hai. """
     try:
         print(f"Attempting to start Client: {client_id}")
-        # Multi-clients ko updates (messages) handle karne ki zaroorat nahi hai
         client = await Client(
             name=str(client_id), 
             api_id=Config.API_ID, 
             api_hash=Config.API_HASH,
             bot_token=bot_token, 
             no_updates=True, 
-            in_memory=True # Session file disk par save nahi hogi
+            in_memory=True
         ).start()
         work_loads[client_id] = 0
         multi_clients[client_id] = client
@@ -82,7 +83,6 @@ async def initialize_clients(main_bot_instance):
     print(f"Found {len(all_tokens)} extra clients. Starting them with a delay...")
     for i, token in all_tokens.items():
         await start_client(i, token)
-        # Chota sa delay taaki Telegram rate limit hit na ho
         await asyncio.sleep(2)
 
     if len(multi_clients) > 1:
