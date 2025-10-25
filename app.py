@@ -266,6 +266,14 @@ async def cleanup_channel(c: Client):
 # =====================================================================================
 # --- FASTAPI WEB SERVER ---
 # =====================================================================================
+ 
+@app.get("/")
+async def health_check():
+    """
+    This route provides a 200 OK response for uptime monitors.
+    """
+    return {"status": "ok", "message": "Server is healthy and running!"}
+
 @app.get("/api/file/{unique_id}", response_class=JSONResponse)
 async def get_file_details_api(request: Request, unique_id: str):
     message_id = await db.get_link(unique_id)
