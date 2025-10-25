@@ -1,4 +1,4 @@
-# bot.py (FINAL CLEAN VERSION)
+# bot.py (FINAL UPDATED VERSION)
 
 import os
 import asyncio
@@ -19,12 +19,27 @@ bot = Client(
     api_hash=Config.API_HASH,
     bot_token=Config.BOT_TOKEN,
     workers=100,
-    plugins=plugins,  # <-- Yahan plugins ko register karo
-    workdir="sessions"
+    plugins=plugins,  # Yahan plugins ko register kiya gaya hai
+    workdir="sessions" # Session files ke liye alag folder
 )
+
+# --- Central Helper Function ---
+# Yeh function ab yahan hai taaki dusri files ise yahan se import kar sakein
+def get_readable_file_size(size_in_bytes):
+    """ Human-readable file size return karta hai (e.g., 10.24 MB). """
+    if not size_in_bytes: return '0B'
+    power = 1024
+    n = 0
+    power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G'}
+    while size_in_bytes >= power and n < len(power_labels):
+        size_in_bytes /= power
+        n += 1
+    return f"{size_in_bytes:.2f} {power_labels[n]}B"
+
 
 # --- Multi-Client Initialization Logic ---
 class TokenParser:
+    """ Environment variables se MULTI_TOKENs ko parse karta hai. """
     @staticmethod
     def parse_from_env():
         return {
@@ -35,20 +50,26 @@ class TokenParser:
         }
 
 async def start_client(client_id, bot_token):
+    """ Ek naye client bot ko start karta hai. """
     try:
         print(f"Attempting to start Client: {client_id}")
-        # Multi-clients ko plugins ki zaroorat nahi hai, isliye unhe no_updates=True ke saath start karo
+        # Multi-clients ko updates (messages) handle karne ki zaroorat nahi hai
         client = await Client(
-            name=str(client_id), api_id=Config.API_ID, api_hash=Config.API_HASH,
-            bot_token=bot_token, no_updates=True, in_memory=True
+            name=str(client_id), 
+            api_id=Config.API_ID, 
+            api_hash=Config.API_HASH,
+            bot_token=bot_token, 
+            no_updates=True, 
+            in_memory=True # Session file disk par save nahi hogi
         ).start()
         work_loads[client_id] = 0
         multi_clients[client_id] = client
-        print(f"Client {client_id} started successfully.")
+        print(f"✅ Client {client_id} started successfully.")
     except Exception as e:
         print(f"!!! CRITICAL ERROR: Failed to start Client {client_id} - Error: {e}")
 
 async def initialize_clients(main_bot_instance):
+    """ Saare additional clients ko initialize karta hai. """
     multi_clients[0] = main_bot_instance
     work_loads[0] = 0
     print("Main bot instance registered for work.")
@@ -58,9 +79,10 @@ async def initialize_clients(main_bot_instance):
         print("No additional clients found. Using default bot only.")
         return
     
-    print(f"Found {len(all_tokens)} extra clients. Starting them with a delay.")
+    print(f"Found {len(all_tokens)} extra clients. Starting them with a delay...")
     for i, token in all_tokens.items():
         await start_client(i, token)
+        # Chota sa delay taaki Telegram rate limit hit na ho
         await asyncio.sleep(2)
 
     if len(multi_clients) > 1:
