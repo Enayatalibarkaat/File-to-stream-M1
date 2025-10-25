@@ -1,4 +1,4 @@
-# app.py (FINAL "SMART GATEKEEPER" FULL CODE)
+# app.py (THE REAL, FINAL, CORRECTED FULL CODE)
 
 import os
 import asyncio
@@ -74,7 +74,6 @@ async def file_handler(_, message: Message):
 
 @bot.on_message(filters.command("url") & filters.private & filters.user(Config.OWNER_ID))
 async def url_upload_handler(_, message: Message):
-    # ... (url handler code is complete and correct)
     if len(message.command) < 2: await message.reply_text("Usage: `/url <link>`"); return
     url = message.command[1]; file_name = os.path.basename(urlparse(url).path) or f"file_{int(time.time())}"; status_msg = await message.reply_text("Processing...")
     file_path = os.path.join('downloads', file_name)
@@ -93,46 +92,47 @@ async def url_upload_handler(_, message: Message):
     finally:
         if os.path.exists(file_path): os.remove(file_path)
 
-# --- SMART GATEKEEPER LOGIC ---
 
-@bot.on_chat_member_updated(filters.chat(Config.STORAGE_CHANNEL) & ~filters.channel)
-async def smart_gatekeeper(client: Client, member_update: ChatMemberUpdated):
+# --- SIMPLE & RELIABLE GATEKEEPER LOGIC ---
+
+@bot.on_chat_member_updated(filters.chat(Config.STORAGE_CHANNEL))
+async def simple_gatekeeper(client: Client, member_update: ChatMemberUpdated):
     try:
+        # Check if a new user has actually joined
         if (
-            not member_update.new_chat_member
-            or member_update.new_chat_member.user.id == Config.OWNER_ID
-            or member_update.new_chat_member.user.is_self
+            member_update.new_chat_member
+            and member_update.new_chat_member.status == enums.ChatMemberStatus.MEMBER
         ):
-            return
-
-        user_id = member_update.new_chat_member.user.id
-        
-        # Agar user ko kisi admin ne add kiya hai ya usne invite link se join kiya hai, toh use rehne do
-        if member_update.new_chat_member.promoted_by or member_update.invite_link:
-            print(f"Smart Gatekeeper: User {user_id} joined via admin-add or invite link. Allowing.")
-            return
+            user = member_update.new_chat_member.user
             
-        # Warna, iska matlab hai ki usne public search se join kiya hai. Kick karo.
-        print(f"Smart Gatekeeper: User {user_id} joined via public search. Kicking...")
-        await client.ban_chat_member(Config.STORAGE_CHANNEL, user_id)
-        await client.unban_chat_member(Config.STORAGE_CHANNEL, user_id) # Optional: Unban karo taaki link se join kar sake
-        print(f"Smart Gatekeeper: User {user_id} kicked successfully.")
+            # Allow the bot itself and the owner
+            if user.id == Config.OWNER_ID or user.is_self:
+                return
+
+            # Kick everyone else
+            print(f"Gatekeeper: Unauthorized user '{user.first_name}' ({user.id}) joined. Kicking...")
+            await client.ban_chat_member(Config.STORAGE_CHANNEL, user.id)
+            await client.unban_chat_member(Config.STORAGE_CHANNEL, user.id)
+            print(f"Gatekeeper: User {user.id} kicked successfully.")
+
     except Exception as e:
-        print(f"Smart Gatekeeper Error: {e}")
+        print(f"Gatekeeper Error: {e}")
 
 async def cleanup_channel(client: Client):
-    """Bot start hone par channel ko saaf karta hai."""
+    """Cleans up unauthorized members on startup."""
     print("Gatekeeper: Running initial channel cleanup...")
     allowed_members = {Config.OWNER_ID, client.me.id}
     try:
-        async for member in client.get_chat_members(Config.STORAGE_CHANNEL):
+        # Fetch only normal members, ignore admins to prevent errors
+        async for member in client.get_chat_members(Config.STORAGE_CHANNEL, filter=enums.ChatMembersFilter.MEMBERS):
             if member.user.id not in allowed_members:
                 try:
-                    print(f"Gatekeeper cleanup: Found unauthorized user {member.user.id}. Kicking...")
+                    print(f"Gatekeeper cleanup: Found unauthorized member {member.user.id}. Kicking...")
                     await client.ban_chat_member(Config.STORAGE_CHANNEL, member.user.id)
-                    await asyncio.sleep(1)
-                except (FloodWait, UserNotParticipant):
-                    await asyncio.sleep(member.until_date or 1)
+                    await asyncio.sleep(1) # Add delay to avoid flood waits
+                except FloodWait as e:
+                    print(f"Gatekeeper cleanup: FloodWait of {e.value}s. Sleeping...")
+                    await asyncio.sleep(e.value)
                 except Exception as e:
                     print(f"Gatekeeper cleanup: Could not kick {member.user.id}. Error: {e}")
         print("Gatekeeper: Initial channel cleanup complete.")
@@ -140,8 +140,7 @@ async def cleanup_channel(client: Client):
         print(f"Gatekeeper cleanup: Could not get chat members. Error: {e}")
 
 
-# --- FastAPI Web Server Routes (No changes here) ---
-# ... (All @app.get routes are complete and correct)
+# --- FastAPI Web Server Routes ---
 class ByteStreamer:
     def __init__(self, c: Client): self.client = c
     @staticmethod
@@ -188,7 +187,7 @@ async def stream_media(r: Request, mid: int, fname: str):
         if not m or msg.empty: raise FileNotFoundError
         fid = FileId.decode(m.file_id); fsize = m.file_size; rh = r.headers.get("Range", 0); fb, ub = 0, fsize-1
         if rh: fbs, ubs = rh.replace("bytes=","").split("-"); fb = int(fbs)
-        if ubs: ub = int(ubs)
+        if 'ubs' in locals() and ubs: ub = int(ubs)
         if (ub >= fsize) or (fb < 0): raise HTTPException(416)
         rl = ub - fb + 1; cs = 1024*1024; off = (fb//cs)*cs; fc = fb - off; lc = (ub%cs)+1; pc = math.ceil(rl/cs)
         body = tc.yield_file(fid, i, off, fc, lc, pc, cs); sc = 206 if rh else 200
@@ -222,7 +221,6 @@ async def main():
     except Exception as e:
         print(f"\n❌❌❌ FATAL: Could not access STORAGE_CHANNEL. Error: {e}\n"); return
 
-    # Startup cleanup
     await cleanup_channel(bot)
 
     multi_clients[0] = bot
