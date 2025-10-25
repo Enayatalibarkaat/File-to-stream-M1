@@ -1,4 +1,4 @@
-# webserver.py (FINAL CLEANED VERSION - NO STARTUP LOGIC)
+# webserver.py (FULL, COMPLETE CODE for the main.py structure)
 
 import math
 import traceback
@@ -10,36 +10,42 @@ from pyrogram.file_id import FileId
 from pyrogram import raw, Client
 from pyrogram.session import Session, Auth
 
+# Local imports from your project
 from config import Config
 from bot import multi_clients, work_loads, get_readable_file_size
 from database import db
 
-# FastAPI app ko ab bina 'lifespan' ke banaya ja raha hai.
-# Startup aur shutdown ka saara kaam ab main.py mein hota hai.
+# FastAPI app instance, started by main.py
 app = FastAPI()
-
 templates = Jinja2Templates(directory="templates")
+
+# A cache to store ByteStreamer instances to avoid re-creating them
 class_cache = {}
 
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return {"status": "ok", "message": "Server is healthy and running!"}
+    """A simple health check route."""
+    return {"status": "ok", "message": "Web server is healthy!"}
 
 def mask_filename(name: str) -> str:
-    """ Filename ko thoda chupa deta hai taaki link se pata na chale. """
+    """Obfuscates the filename to hide it in the URL/page."""
     if not name: return "Protected File"
-    resolutions = ["2160p", "1080p", "720p", "480p", "360p"]
+    resolutions = ["216_p", "480p", "720p", "1080p", "2160p"]
     res_part = ""
     for res in resolutions:
-        if res in name: res_part = f" {res}"; name = name.replace(res, ""); break
+        if res in name:
+            res_part = f" {res}"
+            name = name.replace(res, "")
+            break
     base, ext = os.path.splitext(name)
     masked_base = ''.join(c if (i % 3 == 0 and c.isalnum()) else '*' for i, c in enumerate(base))
     return f"{masked_base}{res_part}{ext}"
 
 class ByteStreamer:
-    """ Telegram se file ke parts (chunks) download karne ka logic. """
-    def __init__(self, client: Client): self.client = client
-    
+    """Handles the low-level logic of fetching file parts from Telegram."""
+    def __init__(self, client: Client):
+        self.client = client
+
     @staticmethod
     async def get_location(file_id: FileId):
         return raw.types.InputDocumentFileLocation(
@@ -48,7 +54,7 @@ class ByteStreamer:
             file_reference=file_id.file_reference,
             thumb_size=file_id.thumbnail_size
         )
-    
+
     async def yield_file(self, file_id: FileId, index: int, offset: int, first_part_cut: int, last_part_cut: int, part_count: int, chunk_size: int):
         client = self.client
         work_loads[index] += 1
@@ -91,81 +97,79 @@ class ByteStreamer:
 
 @app.get("/show/{unique_id}", response_class=HTMLResponse)
 async def show_file_page(request: Request, unique_id: str):
-    """ Download page dikhane wala route. """
+    """The route that displays the download page to the user."""
     try:
         storage_msg_id = await db.get_link(unique_id)
-        if not storage_msg_id: raise HTTPException(404, "Link expired or invalid.")
+        if not storage_msg_id:
+            raise HTTPException(status_code=404, detail="Link expired or invalid.")
         
+        # Use the main bot (client 0) to get message details
         main_bot = multi_clients.get(0)
-        if not main_bot: raise HTTPException(503, "Bot is not ready yet. Please try again in a moment.")
+        if not main_bot:
+            raise HTTPException(status_code=503, detail="Bot is not ready yet. Please try again in a moment.")
         
         file_msg = await main_bot.get_messages(Config.STORAGE_CHANNEL, storage_msg_id)
         media = file_msg.document or file_msg.video or file_msg.audio
-        if not media: raise HTTPException(404, "File media not found in the message.")
+        if not media:
+            raise HTTPException(status_code=404, detail="File not found in the message.")
         
         original_file_name = media.file_name or "file"
-        masked_name = mask_filename(original_file_name)
-        file_size = get_readable_file_size(media.file_size)
-        mime_type = media.mime_type or "application/octet-stream"
-        is_media = mime_type.startswith(("video/", "audio/"))
-        
-        # File ka naam URL-friendly banaya
         safe_file_name = "".join(c for c in original_file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
-        dl_link = f"{Config.BASE_URL}/dl/{storage_msg_id}/{safe_file_name}"
 
         context = {
             "request": request,
-            "file_name": masked_name,
-            "file_size": file_size,
-            "is_media": is_media,
-            "direct_dl_link": dl_link,
-            "mx_player_link": f"intent:{dl_link}#Intent;action=android.intent.action.VIEW;type={mime_type};end",
-            "vlc_player_link": f"vlc://{dl_link}"
+            "file_name": mask_filename(original_file_name),
+            "file_size": get_readable_file_size(media.file_size),
+            "is_media": (media.mime_type or "").startswith(("video/", "audio/")),
+            "direct_dl_link": f"{Config.BASE_URL}/dl/{storage_msg_id}/{safe_file_name}",
+            "mx_player_link": f"intent:{Config.BASE_URL}/dl/{storage_msg_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={media.mime_type};end",
+            "vlc_player_link": f"vlc://{Config.BASE_URL}/dl/{storage_msg_id}/{safe_file_name}"
         }
         return templates.TemplateResponse("show.html", context)
-    except HTTPException as e:
-        raise e # FastAPI ke errors ko waise hi pass karo
-    except Exception:
-        print(f"Error in /show/{unique_id}: {traceback.format_exc()}")
-        raise HTTPException(500, "Internal server error while fetching file details.")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in /show route: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal server error.")
 
 @app.get("/dl/{msg_id}/{file_name}")
 async def stream_handler(request: Request, msg_id: int, file_name: str):
-    """ Asli streaming/downloading wala route. """
-    range_header = request.headers.get("Range", 0)
-    
-    # Sabse kam load wale client ko chuno
-    index = min(work_loads, key=work_loads.get, default=0)
-    client = multi_clients.get(index)
-    if not client: raise HTTPException(503, "No available clients to stream.")
-    
-    # ByteStreamer ko cache se use karo ya naya banao
-    tg_connect = class_cache.get(client)
-    if not tg_connect:
-        tg_connect = ByteStreamer(client)
-        class_cache[client] = tg_connect
-        
+    """The route that handles the actual file streaming and download."""
     try:
-        message = await client.get_messages(Config.STORAGE_CHANNEL, msg_id)
-        if not (message.video or message.document or message.audio) or message.empty:
-            raise FileNotFoundError
+        # Choose the client with the least workload
+        index = min(work_loads, key=work_loads.get, default=0)
+        client = multi_clients.get(index)
+        if not client:
+            raise HTTPException(status_code=503, detail="No available clients to handle the request.")
         
+        tg_connect = class_cache.get(client)
+        if not tg_connect:
+            tg_connect = ByteStreamer(client)
+            class_cache[client] = tg_connect
+            
+        message = await client.get_messages(Config.STORAGE_CHANNEL, msg_id)
         media = message.document or message.video or message.audio
+        if not media or message.empty:
+            raise FileNotFoundError
+
         file_id = FileId.decode(media.file_id)
         file_size = media.file_size
         
+        range_header = request.headers.get("Range", 0)
         from_bytes, until_bytes = 0, file_size - 1
         if range_header:
             from_bytes_str, until_bytes_str = range_header.replace("bytes=", "").split("-")
             from_bytes = int(from_bytes_str)
-            if until_bytes_str: until_bytes = int(until_bytes_str)
+            if until_bytes_str:
+                until_bytes = int(until_bytes_str)
         
         if (until_bytes >= file_size) or (from_bytes < 0):
             raise HTTPException(status_code=416, detail="Requested range not satisfiable")
         
-        chunk_size = 1024 * 1024 # 1 MB
         req_length = until_bytes - from_bytes + 1
-        offset = from_bytes - (from_bytes % chunk_size)
+        chunk_size = 1024 * 1024  # 1 MB
+        offset = (from_bytes // chunk_size) * chunk_size
         first_part_cut = from_bytes - offset
         last_part_cut = (until_bytes % chunk_size) + 1
         part_count = math.ceil(req_length / chunk_size)
@@ -185,7 +189,7 @@ async def stream_handler(request: Request, msg_id: int, file_name: str):
         return StreamingResponse(content=body, status_code=status_code, headers=headers)
         
     except FileNotFoundError:
-        raise HTTPException(404, "File not found on Telegram.")
-    except Exception:
-        print(f"Error in /dl/{msg_id}: {traceback.format_exc()}")
-        raise HTTPException(500, "Internal streaming error.")
+        raise HTTPException(status_code=404, detail="File not found on Telegram.")
+    except Exception as e:
+        print(f"Error in /dl route: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal streaming error.")
