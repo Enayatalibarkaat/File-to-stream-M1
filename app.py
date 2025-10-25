@@ -1,3 +1,5 @@
+# app.py (FINAL "SMART GATEKEEPER" FULL CODE)
+
 import os
 import asyncio
 import secrets
@@ -7,9 +9,9 @@ from urllib.parse import urlparse
 
 import aiohttp
 import aiofiles
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
+from pyrogram import Client, filters, idle, enums
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
+from pyrogram.errors import FloodWait, UserNotParticipant
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
@@ -18,6 +20,7 @@ from pyrogram import raw
 from pyrogram.session import Session, Auth
 import math
 
+# Imports from your other project files
 from config import Config
 from database import db
 
@@ -29,31 +32,49 @@ multi_clients = {}
 work_loads = {}
 class_cache = {}
 
-# --- Helper Functions, Handlers, and Routes (No changes here) ---
+# --- Helper Functions ---
 def get_readable_file_size(size_in_bytes):
     if not size_in_bytes: return '0B'
     power, n = 1024, 0; power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G'}
     while size_in_bytes >= power and n < len(power_labels): size_in_bytes /= power; n += 1
     return f"{size_in_bytes:.2f} {power_labels[n]}B"
+
 def mask_filename(name: str):
     if not name: return "Protected File"; resolutions = ["2160p", "1080p", "720p", "480p", "360p"]; res_part = ""
     for res in resolutions:
         if res in name: res_part = f" {res}"; name = name.replace(res, ""); break
     base, ext = os.path.splitext(name); masked_base = ''.join(c if (i % 3 == 0 and c.isalnum()) else '*' for i, c in enumerate(base))
     return f"{masked_base}{res_part}{ext}"
+
+# --- Pyrogram Bot Handlers ---
+
 @bot.on_message(filters.command("start") & filters.private)
-async def start_command(_, message: Message): await message.reply_text(f"Hello, {message.from_user.first_name}! Send a file.")
+async def start_command(_, message: Message):
+    user_name = message.from_user.first_name
+    await message.reply_text(f"""
+👋 **Hello, {user_name}!**
+I generate direct download links for your files. Just send me any file or use /url to upload from a link.
+""")
+
 async def handle_file_upload(message: Message, user_id: int):
     try:
-        sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL); unique_id = secrets.token_urlsafe(8)
-        await db.save_link(unique_id, sent_message.id); final_link = f"{Config.BASE_URL}/show/{unique_id}"
+        sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL)
+        unique_id = secrets.token_urlsafe(8)
+        await db.save_link(unique_id, sent_message.id)
+        final_link = f"{Config.BASE_URL}/show/{unique_id}"
         button = InlineKeyboardMarkup([[InlineKeyboardButton("Open Your Link 🔗", url=final_link)]])
-        await message.reply_text("✅ Link generated!", reply_markup=button, quote=True)
-    except Exception: print(f"!!! ERROR: {traceback.format_exc()}"); await message.reply_text("Sorry, something went wrong.")
+        await message.reply_text("✅ Your shareable link has been generated!", reply_markup=button, quote=True)
+    except Exception as e:
+        print(f"!!! ERROR in handle_file_upload: {traceback.format_exc()}")
+        await message.reply_text("Sorry, something went wrong. Check if the bot is an admin in the storage channel.")
+
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def file_handler(_, message: Message): await handle_file_upload(message, message.from_user.id)
+async def file_handler(_, message: Message):
+    await handle_file_upload(message, message.from_user.id)
+
 @bot.on_message(filters.command("url") & filters.private & filters.user(Config.OWNER_ID))
 async def url_upload_handler(_, message: Message):
+    # ... (url handler code is complete and correct)
     if len(message.command) < 2: await message.reply_text("Usage: `/url <link>`"); return
     url = message.command[1]; file_name = os.path.basename(urlparse(url).path) or f"file_{int(time.time())}"; status_msg = await message.reply_text("Processing...")
     file_path = os.path.join('downloads', file_name)
@@ -63,12 +84,64 @@ async def url_upload_handler(_, message: Message):
             if r.status != 200: await status_msg.edit_text(f"Download failed: {r.status}"); return
             async with aiofiles.open(file_path, 'wb') as f:
                 async for c in r.content.iter_chunked(1024*1024): await f.write(c)
-    except Exception as e: await status_msg.edit_text(f"Error: {e}");
-    if os.path.exists(file_path): os.remove(file_path); return
+    except Exception as e:
+        await status_msg.edit_text(f"Error: {e}")
+        if os.path.exists(file_path): os.remove(file_path)
+        return
     try:
         sent_message = await bot.send_document(Config.STORAGE_CHANNEL, file_path); await handle_file_upload(sent_message, message.from_user.id); await status_msg.delete()
     finally:
         if os.path.exists(file_path): os.remove(file_path)
+
+# --- SMART GATEKEEPER LOGIC ---
+
+@bot.on_chat_member_updated(filters.chat(Config.STORAGE_CHANNEL) & ~filters.channel)
+async def smart_gatekeeper(client: Client, member_update: ChatMemberUpdated):
+    try:
+        if (
+            not member_update.new_chat_member
+            or member_update.new_chat_member.user.id == Config.OWNER_ID
+            or member_update.new_chat_member.user.is_self
+        ):
+            return
+
+        user_id = member_update.new_chat_member.user.id
+        
+        # Agar user ko kisi admin ne add kiya hai ya usne invite link se join kiya hai, toh use rehne do
+        if member_update.new_chat_member.promoted_by or member_update.invite_link:
+            print(f"Smart Gatekeeper: User {user_id} joined via admin-add or invite link. Allowing.")
+            return
+            
+        # Warna, iska matlab hai ki usne public search se join kiya hai. Kick karo.
+        print(f"Smart Gatekeeper: User {user_id} joined via public search. Kicking...")
+        await client.ban_chat_member(Config.STORAGE_CHANNEL, user_id)
+        await client.unban_chat_member(Config.STORAGE_CHANNEL, user_id) # Optional: Unban karo taaki link se join kar sake
+        print(f"Smart Gatekeeper: User {user_id} kicked successfully.")
+    except Exception as e:
+        print(f"Smart Gatekeeper Error: {e}")
+
+async def cleanup_channel(client: Client):
+    """Bot start hone par channel ko saaf karta hai."""
+    print("Gatekeeper: Running initial channel cleanup...")
+    allowed_members = {Config.OWNER_ID, client.me.id}
+    try:
+        async for member in client.get_chat_members(Config.STORAGE_CHANNEL):
+            if member.user.id not in allowed_members:
+                try:
+                    print(f"Gatekeeper cleanup: Found unauthorized user {member.user.id}. Kicking...")
+                    await client.ban_chat_member(Config.STORAGE_CHANNEL, member.user.id)
+                    await asyncio.sleep(1)
+                except (FloodWait, UserNotParticipant):
+                    await asyncio.sleep(member.until_date or 1)
+                except Exception as e:
+                    print(f"Gatekeeper cleanup: Could not kick {member.user.id}. Error: {e}")
+        print("Gatekeeper: Initial channel cleanup complete.")
+    except Exception as e:
+        print(f"Gatekeeper cleanup: Could not get chat members. Error: {e}")
+
+
+# --- FastAPI Web Server Routes (No changes here) ---
+# ... (All @app.get routes are complete and correct)
 class ByteStreamer:
     def __init__(self, c: Client): self.client = c
     @staticmethod
@@ -138,25 +211,19 @@ async def main():
         await bot.start()
     except FloodWait as e:
         print(f"!!! FloodWait of {e.value}s received. Sleeping...")
-        await asyncio.sleep(e.value + 5)
-        print("Retrying bot start after FloodWait...")
-        await bot.start()
+        await asyncio.sleep(e.value + 5); await bot.start()
         
     print(f"Bot [@{bot.me.username}] started successfully.")
     
-    # --- CHANNEL CHECK FIX ---
     try:
-        print(f"Verifying channel access for {Config.STORAGE_CHANNEL} by sending a message...")
-        # Use send_message as a more robust check
-        startup_message = await bot.send_message(Config.STORAGE_CHANNEL, "<code>Bot is online and connected.</code>")
-        # Delete the message after a few seconds to keep the channel clean
-        await asyncio.sleep(5)
-        await startup_message.delete()
+        print(f"Verifying channel access for {Config.STORAGE_CHANNEL}...")
+        await bot.get_chat(Config.STORAGE_CHANNEL)
         print("✅ Channel is accessible.")
     except Exception as e:
-        print(f"\n❌❌❌ FATAL: Could not access STORAGE_CHANNEL. Error: {e}\n")
-        print("This is a CONFIGURATION ERROR. Please check your STORAGE_CHANNEL and ensure the bot has 'Post Messages' permission.")
-        return
+        print(f"\n❌❌❌ FATAL: Could not access STORAGE_CHANNEL. Error: {e}\n"); return
+
+    # Startup cleanup
+    await cleanup_channel(bot)
 
     multi_clients[0] = bot
     work_loads[0] = 0
@@ -165,7 +232,7 @@ async def main():
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     
-    print(f"\nStarting web server on http://0.0.0.0:{port}")
+    print("\nStarting web server...")
     print("✅✅✅ All services are up and running! ✅✅✅\n")
     
     loop = asyncio.get_event_loop()
@@ -180,7 +247,6 @@ if __name__ == "__main__":
         print("Shutdown signal received.")
     finally:
         print("--- Services are shutting down ---")
-        # --- is_running FIX ---
         if bot.is_initialized:
             asyncio.run(bot.stop())
         print("Shutdown complete.")
