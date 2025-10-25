@@ -1,4 +1,4 @@
-# bot.py (THE FINAL, CLEAN, WORKING CODE)
+# bot.py (THE FINAL, CLEAN, WORKING CODE - CORRECTED)
 
 import os
 import time
@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 import aiohttp
 import aiofiles
 from pyrogram import Client, filters
-from pyrogram.errors import FloodWait
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import Config
@@ -60,8 +59,6 @@ async def initialize_clients(main_bot_instance):
     multi_clients[0] = main_bot_instance
     work_loads[0] = 0
     
-    # Purana fix yahan se hata diya gaya hai kyunki webserver.py mein isse behtar fix laga hai.
-
     all_tokens = TokenParser.parse_from_env()
     if not all_tokens:
         print("No additional clients found. Using default bot only.")
@@ -70,7 +67,7 @@ async def initialize_clients(main_bot_instance):
     print(f"Found {len(all_tokens)} extra clients. Starting them with a delay.")
     for i, token in all_tokens.items():
         await start_client(i, token)
-        await asyncio.sleep(2) # Thoda delay zaroori hai floodwait se bachne ke liye
+        await asyncio.sleep(2)
 
     if len(multi_clients) > 1:
         print(f"Multi-Client Mode Enabled. Total Clients: {len(multi_clients)}")
@@ -92,13 +89,10 @@ async def start_command(client, message: Message):
     user_name = message.from_user.first_name
     start_text = f"""
 👋 **Hello, {user_name}!**
-
 Welcome to Sharing Box Bot. I can help you create permanent, shareable links for your files.
-
 **How to use me:**
 1.  **Send me any file:** Just send or forward any file to this chat.
 2.  **Send me a URL:** Use the `/url <direct_download_link>` command to upload from a link.
-
 I will instantly give you a special link that you can share with anyone!
 """
     await message.reply_text(start_text)
@@ -106,7 +100,9 @@ I will instantly give you a special link that you can share with anyone!
 
 async def handle_file_upload(message: Message, user_id: int):
     try:
-        sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL)
+        # --- BADLAV YAHAN HAI ---
+        # Hum yahan Config.STORAGE_CHANNEL ko int() mein convert karenge
+        sent_message = await message.copy(chat_id=int(Config.STORAGE_CHANNEL))
         unique_id = secrets.token_urlsafe(8)
         
         await db.save_link(unique_id, sent_message.id)
@@ -159,26 +155,22 @@ async def url_upload_handler(client, message: Message):
         return
     
     try:
-        sent_message = await client.send_document(chat_id=Config.STORAGE_CHANNEL, document=file_path)
+        # --- BADLAV YAHAN HAI ---
+        sent_message = await client.send_document(chat_id=int(Config.STORAGE_CHANNEL), document=file_path)
     finally:
         if os.path.exists(file_path): os.remove(file_path)
 
-    # Note: `handle_file_upload` expects a message object from a user, but `send_document` returns
-    # the bot's own message. For link generation, it works, but for user-specific logic it might need adjustment.
-    # Here, we'll manually call the link generation part.
-    
-    # Creating a temporary message-like object to pass to handle_file_upload
+    # Creating a temporary message object to pass to the handler
     class TempMessage:
-        def __init__(self, sent_msg, original_msg):
-            self.id = sent_msg.id
-            self.chat = sent_msg.chat
-            self.from_user = original_msg.from_user
+        def __init__(self, new_msg, original_msg):
+            self._new_msg = new_msg
+            self._original_msg = original_msg
         
         async def copy(self, chat_id):
-            return await client.copy_message(chat_id, self.chat.id, self.id)
+            return await self._new_msg.copy(chat_id)
 
         async def reply_text(self, *args, **kwargs):
-            return await original_msg.reply_text(*args, **kwargs)
+            return await self._original_msg.reply_text(*args, **kwargs)
 
     temp_msg_for_handler = TempMessage(sent_message, message)
     await handle_file_upload(temp_msg_for_handler, message.from_user.id)
