@@ -1,4 +1,4 @@
-# config.py (FINAL VERSION)
+# config.py (UPDATED)
 
 import os
 from dotenv import load_dotenv
@@ -11,19 +11,23 @@ class Config:
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
     OWNER_ID = int(os.environ.get("OWNER_ID", 0))
     
-    # --- YEH CODE USERNAME AUR ID DONO HANDLE KAR LEGA ---
     _storage_channel_str = os.environ.get("STORAGE_CHANNEL")
     if _storage_channel_str:
-        try:
-            # Pehle try karo ki yeh ek number (ID) hai
-            STORAGE_CHANNEL = int(_storage_channel_str)
-        except ValueError:
-            # Agar number nahi hai, toh yeh ek username (string) hai
-            STORAGE_CHANNEL = _storage_channel_str
-    else:
-        STORAGE_CHANNEL = 0 # Default value agar set na ho
-    # --- BADLAV KHATAM ---
+        try: STORAGE_CHANNEL = int(_storage_channel_str)
+        except ValueError: STORAGE_CHANNEL = _storage_channel_str
+    else: STORAGE_CHANNEL = 0
     
     BASE_URL = os.environ.get("BASE_URL", "").rstrip('/')
     DATABASE_URL = os.environ.get("DATABASE_URL", "")
     BLOGGER_PAGE_URL = os.environ.get("BLOGGER_PAGE_URL", "")
+    
+    # --- YAHAN BADLAV KIYA GAYA HAI ---
+    # Force Subscribe ke liye channel ID/username
+    _fsub_channel_str = os.environ.get("FORCE_SUB_CHANNEL")
+    if _fsub_channel_str:
+        try: FORCE_SUB_CHANNEL = int(_fsub_channel_str)
+        except ValueError: FORCE_SUB_CHANNEL = _fsub_channel_str
+    else: FORCE_SUB_CHANNEL = 0
+        
+    # Yeh bot ka username store karega (code isse automatic set karega)
+    BOT_USERNAME = ""
