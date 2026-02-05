@@ -4,3 +4,5 @@ tgcrypto
 python-dotenv
 python-magic
 motor
+httpx
+jinja2
