@@ -5,6 +5,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.file_id import FileId
 from pyrogram import raw
+from pyrogram.session import Session, Auth
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from config import Config
@@ -15,13 +16,12 @@ async def lifespan(app: FastAPI):
     await db.connect()
     try:
         await bot.start()
-        me = await bot.get_me()
-        Config.BOT_USERNAME = me.username
+        Config.BOT_USERNAME = (await bot.get_me()).username
         multi_clients[0] = bot
         work_loads[0] = 0
         await initialize_clients()
         await bot.get_chat(Config.STORAGE_CHANNEL)
-        print("✅ Bot is Live!")
+        print("✅ Bot is Live and Ready!")
     except Exception as e: print(f"Startup Error: {e}")
     yield
     if bot.is_initialized: await bot.stop()
@@ -43,87 +43,112 @@ async def initialize_clients():
 async def get_shortlink(url):
     shortener = await db.get_shortener()
     if not shortener: return url
-    api_url = shortener['api_url'].strip().replace('[', '').replace(']', '')
-    api_key = shortener['api_key'].strip().replace('[', '').replace(']', '')
+    api_url = shortener['api_url'].strip()
+    api_key = shortener['api_key'].strip()
     try:
         async with httpx.AsyncClient() as client:
-            request_url = f"{api_url}?api={api_key}&url={urllib.parse.quote(url)}"
-            res = await client.get(request_url, timeout=10)
+            # GPLinks format: api_url?api=KEY&url=URL
+            encoded_url = urllib.parse.quote(url)
+            request_url = f"{api_url}?api={api_key}&url={encoded_url}"
+            res = await client.get(request_url, timeout=15)
             data = res.json()
-            if data.get("status") == "success": return data.get("shortenedUrl") or data.get("shortlink")
-            return data.get("shortlink") or data.get("shortenedUrl") or url
-    except: return url
+            # GPLinks 'shortenedUrl' key use karta hai
+            short_url = data.get("shortenedUrl") or data.get("shortlink") or data.get("url")
+            if short_url: return short_url
+    except Exception as e: print(f"Shortener API Error: {e}")
+    return url
 
 @bot.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    await message.reply_text(f"👋 **Hello!** Send me a file for a direct download link.")
+async def start_cmd(client, m):
+    await m.reply_text("👋 Send me a file to get a direct download link with shortener!")
 
 @bot.on_message(filters.command("help") & filters.private)
-async def help_command(client, message):
-    await message.reply_text("🚀 **Commands:**\n\n🔹 `/add_channel [ID]`\n🔹 `/set_shortener [URL] [KEY]`\n🔹 `/del_shortener`\n\n**Note:** Don't use [ ] brackets in commands!")
+async def help_cmd(client, m):
+    await m.reply_text("🚀 **Admin Commands:**\n\n🔹 `/add_channel [ID]`\n🔹 `/set_shortener [API_URL] [API_KEY]`\n🔹 `/del_shortener`")
 
 @bot.on_message(filters.command(["add_channel", "remove_channel"]) & filters.user(Config.OWNER_ID))
-async def manage_channels(client, message):
-    if len(message.command) < 2: return
-    cid = int(message.command[1])
-    if "add" in message.command[0]: await db.add_channel(cid); await message.reply("✅ Added!")
-    else: await db.remove_channel(cid); await message.reply("❌ Removed!")
+async def chan_manage(client, m):
+    if len(m.command) < 2: return
+    try:
+        cid = int(m.command[1])
+        if "add" in m.command[0]: await db.add_channel(cid); await m.reply("✅ Channel Added!")
+        else: await db.remove_channel(cid); await m.reply("❌ Channel Removed!")
+    except: await m.reply("Invalid Channel ID.")
 
 @bot.on_message(filters.command("set_shortener") & filters.user(Config.OWNER_ID))
-async def set_short(client, message):
-    if len(message.command) < 3: return
-    await db.set_shortener(message.command[1], message.command[2])
-    await message.reply("✅ Shortener Updated!")
+async def set_short_cmd(client, m):
+    if len(m.command) < 3: return await m.reply("Usage: `/set_shortener https://gplinks.in/api YOUR_KEY`")
+    await db.set_shortener(m.command[1], m.command[2])
+    await m.reply("✅ Shortener Updated!")
 
 @bot.on_message(filters.command("del_shortener") & filters.user(Config.OWNER_ID))
-async def del_short(client, message):
-    await db.del_shortener(); await message.reply("❌ Shortener Removed!")
+async def del_short_cmd(client, m):
+    await db.del_shortener(); await m.reply("❌ Shortener Deleted!")
     # app.py - PART 3
-async def handle_file_upload(message: Message):
+class ByteStreamer:
+    def __init__(self,c:Client): self.client=c
+    @staticmethod
+    async def get_location(f:FileId): return raw.types.InputDocumentFileLocation(id=f.media_id, access_hash=f.access_hash, file_reference=f.file_reference, thumb_size=f.thumbnail_size)
+    async def yield_file(self,f:FileId,i:int,o:int,fc:int,lc:int,pc:int,cs:int):
+        c=self.client; work_loads[i]+=1; ms=c.media_sessions.get(f.dc_id) or c.session
+        loc=await self.get_location(f); cp=1
+        try:
+            while cp<=pc:
+                r=await ms.invoke(raw.functions.upload.GetFile(location=loc,offset=o,limit=cs),retries=2)
+                if isinstance(r,raw.types.upload.File):
+                    chk=r.bytes
+                    if not chk: break
+                    if pc==1: yield chk[fc:lc]
+                    elif cp==1: yield chk[fc:]
+                    elif cp==pc: yield chk[:lc]
+                    else: yield chk
+                    cp+=1; o+=cs
+                else: break
+        finally: work_loads[i]-=1
+
+@app.get("/dl/{mid}/{fname}")
+async def stream(r:Request, mid:int, fname:str):
+    if not work_loads: raise HTTPException(503)
+    cid = min(work_loads, key=work_loads.get)
+    c = multi_clients[cid]; tc = class_cache.get(c) or ByteStreamer(c); class_cache[c]=tc
+    try:
+        msg = await c.get_messages(Config.STORAGE_CHANNEL, mid)
+        m = msg.document or msg.video or msg.audio
+        fid = FileId.decode(m.file_id); fsize = m.file_size; rh = r.headers.get("Range",""); fb,ub = 0, fsize-1
+        if rh:
+            rps = rh.replace("bytes=","").split("-"); fb = int(rps[0])
+            if len(rps)>1 and rps[1]: ub = int(rps[1])
+        rl = ub-fb+1; cs = 1024*1024; off = (fb//cs)*cs; fc = fb-off; lc = (ub%cs)+1; pc = math.ceil(rl/cs)
+        return StreamingResponse(tc.yield_file(fid,cid,off,fc,lc,pc,cs), status_code=206 if rh else 200, headers={"Content-Type": m.mime_type or "application/octet-stream", "Accept-Ranges": "bytes", "Content-Length": str(rl), "Content-Disposition": f'attachment; filename="{fname}"'})
+    except: raise HTTPException(404)
+
+async def handle_file(message: Message):
     try:
         sent = await message.copy(chat_id=Config.STORAGE_CHANNEL)
-        uid = secrets.token_urlsafe(8); await db.save_link(uid, sent.id)
         media = message.document or message.video or message.audio
         safe_name = "".join(c for c in (media.file_name or "file") if c.isalnum() or c in ('.','_','-')).strip()
-        
-        # Direct Download Link (Chrome Link)
         long_url = f"{Config.BASE_URL}/dl/{sent.id}/{safe_name}"
         final_link = await get_shortlink(long_url)
-        
-        await message.reply_text(f"**✅ File Uploaded!**\n\n📥 **Download Link:**\n`{final_link}`", 
-                               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Now", url=final_link)]]))
-    except: await message.reply_text("Error processing file.")
+        await message.reply_text(f"**✅ File Uploaded!**\n\n📥 **Download Link:**\n`{final_link}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Now", url=final_link)]]))
+    except: await message.reply_text("Error!")
 
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def file_handler(_, m: Message): await handle_file_upload(m)
+async def private_handler(_, m): await handle_file(m)
 
 @bot.on_message(filters.channel & (filters.document | filters.video | filters.audio))
-async def channel_handler(client, m: Message):
+async def channel_handler(client, m):
     if not await db.is_channel_allowed(m.chat.id): return
     try:
         sent = await m.copy(chat_id=Config.STORAGE_CHANNEL)
         media = m.document or m.video or m.audio
         safe_name = "".join(c for c in (media.file_name or "file") if c.isalnum() or c in ('.','_','-')).strip()
-        long_url = f"{Config.BASE_URL}/dl/{sent.id}/{safe_name}"
-        final_link = await get_shortlink(long_url)
-        
+        final_link = await get_shortlink(f"{Config.BASE_URL}/dl/{sent.id}/{safe_name}")
         cap = m.caption.html if m.caption else f"**{media.file_name}**"
-        await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Direct Link:** {final_link}")
+        await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Download:** {final_link}")
     except: pass
 
 @app.get("/")
 async def health(): return {"status": "ok"}
 
-@app.get("/dl/{mid}/{fname}")
-async def stream(r:Request, mid:int, fname:str):
-    cid = min(work_loads, key=work_loads.get)
-    c = multi_clients[cid]
-    msg = await c.get_messages(Config.STORAGE_CHANNEL, mid)
-    m = msg.document or msg.video or msg.audio
-    # Streaming logic as before...
-    # (Yahan aapka purana ByteStreamer logic rahega jo chrome download handle karta hai)
-    return StreamingResponse(None) # Placeholder
-
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-    
