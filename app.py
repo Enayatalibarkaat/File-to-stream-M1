@@ -1,29 +1,3 @@
-import httpx # Isse install kar lena: pip install httpx
-
-# --- LINK SHORTENER HELPER ---
-async def get_shortlink(url):
-    shortener = await db.get_shortener() # Database se API mangwayein
-    if not shortener:
-        return url
-    
-    api_url = shortener['api_url']
-    api_key = shortener['api_key']
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            # Common PPD format: https://api_url/api?api=KEY&url=URL
-            request_url = f"{api_url}?api={api_key}&url={url}"
-            res = await client.get(request_url, timeout=10)
-            data = res.json()
-            if data.get("status") == "success" or data.get("shortenedUrl"):
-                return data.get("shortenedUrl") or data.get("shortlink")
-    except Exception as e:
-        print(f"Shortener Error: {e}")
-    return url
-    
-
-# app.py - PART 1 (Imports and Lifespan)
-
 import os
 import asyncio
 import secrets
@@ -31,6 +5,7 @@ import traceback
 import uvicorn
 import re
 import logging
+import httpx # Isse requirements.txt mein add kar dena
 from contextlib import asynccontextmanager
 
 from pyrogram import Client, filters, enums
@@ -56,22 +31,15 @@ from database import db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Yeh function bot ko web server ke saath start aur stop karta hai.
-    """
     print("--- Lifespan: Server chalu ho raha hai... ---")
-    
     await db.connect()
-    
     try:
         print("Starting main Pyrogram bot...")
         await bot.start()
-        
         me = await bot.get_me()
         Config.BOT_USERNAME = me.username
         print(f"✅ Main Bot [@{Config.BOT_USERNAME}] safaltapoorvak start ho gaya.")
 
-        # --- MULTI-CLIENT STARTUP ---
         multi_clients[0] = bot
         work_loads[0] = 0
         await initialize_clients()
@@ -82,39 +50,23 @@ async def lifespan(app: FastAPI):
 
         if Config.FORCE_SUB_CHANNEL:
             try:
-                print(f"Verifying force sub channel ({Config.FORCE_SUB_CHANNEL})...")
                 await bot.get_chat(Config.FORCE_SUB_CHANNEL)
                 print("✅ Force Sub channel accessible hai.")
             except Exception as e:
-                print(f"!!! WARNING: Bot, Force Sub channel mein admin nahi hai. Error: {e}")
+                print(f"!!! WARNING: Force Sub error: {e}")
         
-        try:
-            await cleanup_channel(bot)
-        except Exception as e:
-            print(f"Warning: Channel cleanup fail ho gaya. Error: {e}")
+        try: await cleanup_channel(bot)
+        except Exception: pass
 
-        print("--- Lifespan: Startup safaltapoorvak poora hua. ---")
-    
+        print("--- Lifespan: Startup poora hua. ---")
     except Exception as e:
-        print(f"!!! FATAL ERROR: Bot startup ke dauraan error aa gaya: {traceback.format_exc()}")
-    
+        print(f"!!! FATAL ERROR: {traceback.format_exc()}")
     yield
-    
-    print("--- Lifespan: Server band ho raha hai... ---")
-    if bot.is_initialized:
-        await bot.stop()
-    print("--- Lifespan: Shutdown poora hua. ---")
-    # app.py - PART 2 (Multi-client, Helpers, and New Upload Logic)
+    if bot.is_initialized: await bot.stop()
 
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class HideDLFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -124,6 +76,35 @@ logging.getLogger("uvicorn.access").addFilter(HideDLFilter())
 
 bot = Client("SimpleStreamBot", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.BOT_TOKEN, in_memory=True)
 multi_clients = {}; work_loads = {}; class_cache = {}
+
+# =====================================================================================
+# --- LINK SHORTENER HELPER ---
+# =====================================================================================
+
+async def get_shortlink(url):
+    """PPD Shortener se link ko shorten karne ke liye"""
+    shortener = await db.get_shortener()
+    if not shortener:
+        return url
+    
+    api_url = shortener['api_url']
+    api_key = shortener['api_key']
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            request_url = f"{api_url}?api={api_key}&url={url}"
+            res = await client.get(request_url, timeout=10)
+            data = res.json()
+            # GPTLinks, Droplink wagera ka format handle karein
+            if data.get("status") == "success" or data.get("shortenedUrl"):
+                return data.get("shortenedUrl") or data.get("shortlink")
+    except Exception as e:
+        print(f"Shortener Error: {e}")
+    return url
+
+# =====================================================================================
+# --- MULTI-CLIENT LOGIC ---
+# =====================================================================================
 
 class TokenParser:
     @staticmethod
@@ -135,13 +116,17 @@ async def start_client(client_id, bot_token):
         client = await Client(name=str(client_id), api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=bot_token, no_updates=True, in_memory=True).start()
         work_loads[client_id] = 0
         multi_clients[client_id] = client
-    except Exception as e: print(f"Error starting client {client_id}: {e}")
+    except Exception as e: print(f"Error client {client_id}: {e}")
 
 async def initialize_clients():
     all_tokens = TokenParser.parse_from_env()
     if not all_tokens: return
     tasks = [start_client(i, token) for i, token in all_tokens.items()]
     await asyncio.gather(*tasks)
+
+# =====================================================================================
+# --- HELPER FUNCTIONS ---
+# =====================================================================================
 
 def get_readable_file_size(size_in_bytes):
     if not size_in_bytes: return '0B'
@@ -155,11 +140,14 @@ def mask_filename(name: str):
     base, ext = os.path.splitext(name)
     metadata_pattern = re.compile(r'((19|20)\d{2}|4k|2160p|1080p|720p|480p|360p|HEVC|x265|BluRay|WEB-DL|HDRip)', re.IGNORECASE)
     match = metadata_pattern.search(base)
-    if match:
-        title_part = base[:match.start()].strip(' .-_'); metadata_part = base[match.start():]
-    else: title_part = base; metadata_part = ""
+    title_part = base[:match.start()].strip(' .-_') if match else base
+    metadata_part = base[match.start():] if match else ""
     masked_title = ''.join(c if (i % 3 == 0 and c.isalnum()) else ('*' if c.isalnum() else c) for i, c in enumerate(title_part))
     return f"{masked_title} {metadata_part}{ext}".strip()
+
+# =====================================================================================
+# --- PYROGRAM BOT HANDLERS & COMMANDS ---
+# =====================================================================================
 
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
@@ -173,7 +161,36 @@ async def start_command(client: Client, message: Message):
     else:
         await message.reply_text(f"👋 **Hello, {user_name}!**\n\nSend me any file and I will give you a direct download link instantly!")
 
-# --- MODIFIED: DIRECT LINK LOGIC ---
+# --- ADMIN COMMANDS FOR CHANNELS & SHORTENER ---
+
+@bot.on_message(filters.command(["add_channel", "remove_channel"]) & filters.user(Config.OWNER_ID))
+async def manage_channels(client, message):
+    if len(message.command) < 2:
+        return await message.reply("Please provide Channel ID (e.g. `/add_channel -1002445775054`)")
+    try:
+        chan_id = int(message.command[1])
+        if "add" in message.command[0]:
+            await db.add_channel(chan_id)
+            await message.reply(f"✅ Channel `{chan_id}` added to auto-edit list!")
+        else:
+            await db.remove_channel(chan_id)
+            await message.reply(f"❌ Channel `{chan_id}` removed!")
+    except Exception as e: await message.reply(f"Error: {e}")
+
+@bot.on_message(filters.command("set_shortener") & filters.user(Config.OWNER_ID))
+async def set_short(client, message):
+    if len(message.command) < 3:
+        return await message.reply("Usage: `/set_shortener API_URL API_KEY`\nExample: `/set_shortener https://gplinks.in/api 123456...`")
+    await db.set_shortener(message.command[1], message.command[2])
+    await message.reply("✅ Shortener settings updated!")
+
+@bot.on_message(filters.command("del_shortener") & filters.user(Config.OWNER_ID))
+async def del_short(client, message):
+    await db.del_shortener()
+    await message.reply("❌ Shortener removed! Direct links only.")
+
+# --- AUTO UPLOAD & CHANNEL EDIT LOGIC ---
+
 async def handle_file_upload(message: Message, user_id: int):
     try:
         sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL)
@@ -185,28 +202,51 @@ async def handle_file_upload(message: Message, user_id: int):
         safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
         
         show_link = f"{Config.BASE_URL}/show/{unique_id}"
-        direct_dl_link = f"{Config.BASE_URL}/dl/{sent_message.id}/{safe_file_name}"
+        long_url = f"{Config.BASE_URL}/dl/{sent_message.id}/{safe_file_name}"
+        
+        # Link Shorten karein
+        final_link = await get_shortlink(long_url)
         
         reply_text = (
-            f"**✅ File Uploaded Successfully!**\n\n"
+            f"**✅ File Uploaded!**\n\n"
             f"📂 **File:** `{file_name}`\n\n"
             f"🌐 **Web Page Link:**\n`{show_link}`\n\n"
-            f"📥 **Direct Download Link:**\n`{direct_dl_link}`"
+            f"📥 **Download Link:**\n`{final_link}`"
         )
-        
-        button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 Open Web Page", url=show_link)],
-            [InlineKeyboardButton("📥 Direct Download", url=direct_dl_link)]
-        ])
-        
+        button = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download Now", url=final_link)]])
         await message.reply_text(reply_text, reply_markup=button, quote=True)
-    except Exception as e:
-        print(f"!!! ERROR: {traceback.format_exc()}"); await message.reply_text("Sorry, something went wrong.")
-    # app.py - PART 3 (Gatekeeper, FastAPI and Streaming)
+    except Exception as e: print(traceback.format_exc()); await message.reply_text("Error processing file.")
 
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def file_handler(_, message: Message):
     await handle_file_upload(message, message.from_user.id)
+
+@bot.on_message(filters.channel & (filters.document | filters.video | filters.audio))
+async def channel_post_handler(client: Client, message: Message):
+    # Check kya channel allowed hai
+    if not await db.is_channel_allowed(message.chat.id):
+        return
+    try:
+        sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL)
+        unique_id = secrets.token_urlsafe(8)
+        await db.save_link(unique_id, sent_message.id)
+
+        media = message.document or message.video or message.audio
+        file_name = media.file_name or "file"
+        safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
+        long_url = f"{Config.BASE_URL}/dl/{sent_message.id}/{safe_file_name}"
+        
+        final_link = await get_shortlink(long_url)
+        
+        cur_caption = message.caption.html if message.caption else f"**{file_name}**"
+        new_caption = f"{cur_caption}\n\n🚀 **Download Link:** {final_link}"
+        
+        await client.edit_message_caption(chat_id=message.chat.id, message_id=message.id, caption=new_caption, parse_mode=enums.ParseMode.HTML)
+    except Exception as e: print(f"Channel Error: {e}")
+
+# =====================================================================================
+# --- GATEKEEPER & FASTAPI ROUTES ---
+# =====================================================================================
 
 @bot.on_chat_member_updated(filters.chat(Config.STORAGE_CHANNEL))
 async def simple_gatekeeper(c: Client, m_update: ChatMemberUpdated):
@@ -215,7 +255,7 @@ async def simple_gatekeeper(c: Client, m_update: ChatMemberUpdated):
             u=m_update.new_chat_member.user
             if u.id==Config.OWNER_ID or u.is_self: return
             await c.ban_chat_member(Config.STORAGE_CHANNEL,u.id); await c.unban_chat_member(Config.STORAGE_CHANNEL,u.id)
-    except Exception as e: print(f"Gatekeeper Error: {e}")
+    except Exception: pass
 
 async def cleanup_channel(c: Client):
     allowed={Config.OWNER_ID,c.me.id}
@@ -223,11 +263,10 @@ async def cleanup_channel(c: Client):
         async for m in c.get_chat_members(Config.STORAGE_CHANNEL):
             if m.user.id in allowed or m.status in [enums.ChatMemberStatus.ADMINISTRATOR,enums.ChatMemberStatus.OWNER]: continue
             await c.ban_chat_member(Config.STORAGE_CHANNEL,m.user.id); await asyncio.sleep(1)
-    except Exception as e: print(f"Cleanup Error: {e}")
+    except Exception: pass
 
 @app.get("/")
-async def health_check():
-    return {"status": "ok", "message": "Server is healthy and running!"}
+async def health_check(): return {"status": "ok"}
 
 @app.get("/show/{unique_id}", response_class=HTMLResponse)
 async def show_page(request: Request, unique_id: str):
@@ -236,22 +275,22 @@ async def show_page(request: Request, unique_id: str):
 @app.get("/api/file/{unique_id}", response_class=JSONResponse)
 async def get_file_details_api(request: Request, unique_id: str):
     message_id = await db.get_link(unique_id)
-    if not message_id: raise HTTPException(404, "Link expired.")
-    main_bot = multi_clients.get(0)
+    if not message_id: raise HTTPException(404)
     try:
-        message = await main_bot.get_messages(Config.STORAGE_CHANNEL, message_id)
+        message = await multi_clients[0].get_messages(Config.STORAGE_CHANNEL, message_id)
         media = message.document or message.video or message.audio
         file_name = media.file_name or "file"
         safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
-        mime_type = media.mime_type or "application/octet-stream"
+        long_url = f"{Config.BASE_URL}/dl/{message_id}/{safe_file_name}"
+        final_link = await get_shortlink(long_url)
         return {
             "file_name": mask_filename(file_name), "file_size": get_readable_file_size(media.file_size),
-            "is_media": mime_type.startswith(("video", "audio")),
-            "direct_dl_link": f"{Config.BASE_URL}/dl/{message_id}/{safe_file_name}",
-            "mx_player_link": f"intent:{Config.BASE_URL}/dl/{message_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={mime_type};end",
-            "vlc_player_link": f"intent:{Config.BASE_URL}/dl/{message_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={mime_type};package=org.videolan.vlc;end"
+            "is_media": (media.mime_type or "").startswith(("video", "audio")),
+            "direct_dl_link": final_link, # Shortlink yahan bhi
+            "mx_player_link": f"intent:{long_url}#Intent;action=android.intent.action.VIEW;type={media.mime_type};end",
+            "vlc_player_link": f"intent:{long_url}#Intent;action=android.intent.action.VIEW;type={media.mime_type};package=org.videolan.vlc;end"
         }
-    except Exception: raise HTTPException(404, "File not found.")
+    except Exception: raise HTTPException(404)
 
 class ByteStreamer:
     def __init__(self,c:Client):self.client=c
@@ -296,4 +335,4 @@ async def stream_media(r:Request,mid:int,fname:str):
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), log_level="info")
-                         
+    
