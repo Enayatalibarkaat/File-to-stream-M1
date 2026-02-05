@@ -1,3 +1,27 @@
+import httpx # Isse install kar lena: pip install httpx
+
+# --- LINK SHORTENER HELPER ---
+async def get_shortlink(url):
+    shortener = await db.get_shortener() # Database se API mangwayein
+    if not shortener:
+        return url
+    
+    api_url = shortener['api_url']
+    api_key = shortener['api_key']
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            # Common PPD format: https://api_url/api?api=KEY&url=URL
+            request_url = f"{api_url}?api={api_key}&url={url}"
+            res = await client.get(request_url, timeout=10)
+            data = res.json()
+            if data.get("status") == "success" or data.get("shortenedUrl"):
+                return data.get("shortenedUrl") or data.get("shortlink")
+    except Exception as e:
+        print(f"Shortener Error: {e}")
+    return url
+    
+
 # app.py - PART 1 (Imports and Lifespan)
 
 import os
