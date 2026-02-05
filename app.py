@@ -1,4 +1,4 @@
-# app.py (THE REAL, FINAL, CLEAN, EASY-TO-READ FULL CODE)
+# app.py - PART 1 (Imports and Lifespan)
 
 import os
 import asyncio
@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
     if bot.is_initialized:
         await bot.stop()
     print("--- Lifespan: Shutdown poora hua. ---")
+    # app.py - PART 2 (Multi-client, Helpers, and New Upload Logic)
 
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
@@ -91,156 +92,93 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- LOG FILTER: YEH SIRF /dl/ WALE LOGS KO CHUPAYEGA ---
 class HideDLFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        # Agar log message mein "GET /dl/" hai, toh usse mat dikhao
         return "GET /dl/" not in record.getMessage()
 
-# Uvicorn ke 'access' logger par filter lagao
 logging.getLogger("uvicorn.access").addFilter(HideDLFilter())
-# --- FIX KHATAM ---
 
 bot = Client("SimpleStreamBot", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.BOT_TOKEN, in_memory=True)
 multi_clients = {}; work_loads = {}; class_cache = {}
 
-# =====================================================================================
-# --- MULTI-CLIENT LOGIC ---
-# =====================================================================================
-
 class TokenParser:
-    """ Environment variables se MULTI_TOKENs ko parse karta hai. """
     @staticmethod
     def parse_from_env():
-        return {
-            c + 1: t
-            for c, (_, t) in enumerate(
-                filter(lambda n: n[0].startswith("MULTI_TOKEN"), sorted(os.environ.items()))
-            )
-        }
+        return {c + 1: t for c, (_, t) in enumerate(filter(lambda n: n[0].startswith("MULTI_TOKEN"), sorted(os.environ.items())))}
 
 async def start_client(client_id, bot_token):
-    """ Ek naye client bot ko start karta hai. """
     try:
-        print(f"Attempting to start Client: {client_id}")
-        client = await Client(
-            name=str(client_id), 
-            api_id=Config.API_ID, 
-            api_hash=Config.API_HASH,
-            bot_token=bot_token, 
-            no_updates=True, 
-            in_memory=True
-        ).start()
+        client = await Client(name=str(client_id), api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=bot_token, no_updates=True, in_memory=True).start()
         work_loads[client_id] = 0
         multi_clients[client_id] = client
-        print(f"✅ Client {client_id} started successfully.")
-    except Exception as e:
-        print(f"!!! CRITICAL ERROR: Failed to start Client {client_id} - Error: {e}")
+    except Exception as e: print(f"Error starting client {client_id}: {e}")
 
 async def initialize_clients():
-    """ Saare additional clients ko initialize karta hai. """
     all_tokens = TokenParser.parse_from_env()
-    if not all_tokens:
-        print("No additional clients found. Using default bot only.")
-        return
-    
-    print(f"Found {len(all_tokens)} extra clients. Starting them...")
+    if not all_tokens: return
     tasks = [start_client(i, token) for i, token in all_tokens.items()]
     await asyncio.gather(*tasks)
 
-    if len(multi_clients) > 1:
-        print(f"✅ Multi-Client Mode Enabled. Total Clients: {len(multi_clients)}")
-
-# =====================================================================================
-# --- HELPER FUNCTIONS ---
-# =====================================================================================
-
 def get_readable_file_size(size_in_bytes):
-    if not size_in_bytes:
-        return '0B'
-    power = 1024
-    n = 0
-    power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB'}
+    if not size_in_bytes: return '0B'
+    power = 1024; n = 0; power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB'}
     while size_in_bytes >= power and n < len(power_labels) - 1:
-        size_in_bytes /= power
-        n += 1
+        size_in_bytes /= power; n += 1
     return f"{size_in_bytes:.2f} {power_labels[n]}"
 
 def mask_filename(name: str):
-    if not name:
-        return "Protected File"
+    if not name: return "Protected File"
     base, ext = os.path.splitext(name)
-    metadata_pattern = re.compile(
-        r'((19|20)\d{2}|4k|2160p|1080p|720p|480p|360p|HEVC|x265|BluRay|WEB-DL|HDRip)',
-        re.IGNORECASE
-    )
+    metadata_pattern = re.compile(r'((19|20)\d{2}|4k|2160p|1080p|720p|480p|360p|HEVC|x265|BluRay|WEB-DL|HDRip)', re.IGNORECASE)
     match = metadata_pattern.search(base)
     if match:
-        title_part = base[:match.start()].strip(' .-_')
-        metadata_part = base[match.start():]
-    else:
-        title_part = base
-        metadata_part = ""
+        title_part = base[:match.start()].strip(' .-_'); metadata_part = base[match.start():]
+    else: title_part = base; metadata_part = ""
     masked_title = ''.join(c if (i % 3 == 0 and c.isalnum()) else ('*' if c.isalnum() else c) for i, c in enumerate(title_part))
     return f"{masked_title} {metadata_part}{ext}".strip()
 
-# =====================================================================================
-# --- PYROGRAM BOT HANDLERS ---
-# =====================================================================================
-
 @bot.on_message(filters.command("start") & filters.private)
 async def start_command(client: Client, message: Message):
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    
+    user_id = message.from_user.id; user_name = message.from_user.first_name
     if len(message.command) > 1 and message.command[1].startswith("verify_"):
         unique_id = message.command[1].split("_", 1)[1]
-        
-        if Config.FORCE_SUB_CHANNEL:
-            try:
-                await client.get_chat_member(Config.FORCE_SUB_CHANNEL, user_id)
-            except UserNotParticipant:
-                channel_username = str(Config.FORCE_SUB_CHANNEL).replace('@', '')
-                channel_link = f"https://t.me/{channel_username}"
-                join_button = InlineKeyboardButton("📢 Join Channel", url=channel_link)
-                retry_button = InlineKeyboardButton("✅ Joined", url=f"https://t.me/{Config.BOT_USERNAME}?start={message.command[1]}")
-                keyboard = InlineKeyboardMarkup([[join_button], [retry_button]])
-                await message.reply_text(
-                    "**You Must Join Our Channel To Get The Link!**\n\n"
-                    "__Join Channel & Click '✅ Joined'.__",
-                    reply_markup=keyboard, quote=True
-                )
-                return
-
         final_link = f"{Config.BASE_URL}/show/{unique_id}"
         reply_text = f"__✅ Verification Successful!\n\nCopy Link:__ `{final_link}`"
         button = InlineKeyboardMarkup([[InlineKeyboardButton("Open Link", url=final_link)]])
         await message.reply_text(reply_text, reply_markup=button, quote=True, disable_web_page_preview=True)
-
     else:
-        reply_text = f"""
-👋 **Hello, {user_name}!**
+        await message.reply_text(f"👋 **Hello, {user_name}!**\n\nSend me any file and I will give you a direct download link instantly!")
 
-__Welcome To Sharing Box Bot. I Can Help You Create Permanent, Shareable Links For Your Files.__
-
-**How To Use Me:**
-
-__Just Send Or Forward Any File To Me And I will instantly give you a special link that you can share with anyone!__
-"""
-        await message.reply_text(reply_text)
-
+# --- MODIFIED: DIRECT LINK LOGIC ---
 async def handle_file_upload(message: Message, user_id: int):
     try:
         sent_message = await message.copy(chat_id=Config.STORAGE_CHANNEL)
         unique_id = secrets.token_urlsafe(8)
         await db.save_link(unique_id, sent_message.id)
         
-        verify_link = f"https://t.me/{Config.BOT_USERNAME}?start=verify_{unique_id}"
-        button = InlineKeyboardMarkup([[InlineKeyboardButton("Get Link Now", url=verify_link)]])
+        media = message.document or message.video or message.audio
+        file_name = media.file_name or "file"
+        safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
         
-        await message.reply_text("__✅ File Uploaded!__", reply_markup=button, quote=True)
+        show_link = f"{Config.BASE_URL}/show/{unique_id}"
+        direct_dl_link = f"{Config.BASE_URL}/dl/{sent_message.id}/{safe_file_name}"
+        
+        reply_text = (
+            f"**✅ File Uploaded Successfully!**\n\n"
+            f"📂 **File:** `{file_name}`\n\n"
+            f"🌐 **Web Page Link:**\n`{show_link}`\n\n"
+            f"📥 **Direct Download Link:**\n`{direct_dl_link}`"
+        )
+        
+        button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌐 Open Web Page", url=show_link)],
+            [InlineKeyboardButton("📥 Direct Download", url=direct_dl_link)]
+        ])
+        
+        await message.reply_text(reply_text, reply_markup=button, quote=True)
     except Exception as e:
         print(f"!!! ERROR: {traceback.format_exc()}"); await message.reply_text("Sorry, something went wrong.")
+    # app.py - PART 3 (Gatekeeper, FastAPI and Streaming)
 
 @bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def file_handler(_, message: Message):
@@ -252,65 +190,44 @@ async def simple_gatekeeper(c: Client, m_update: ChatMemberUpdated):
         if(m_update.new_chat_member and m_update.new_chat_member.status==enums.ChatMemberStatus.MEMBER):
             u=m_update.new_chat_member.user
             if u.id==Config.OWNER_ID or u.is_self: return
-            print(f"Gatekeeper: Kicking {u.id}"); await c.ban_chat_member(Config.STORAGE_CHANNEL,u.id); await c.unban_chat_member(Config.STORAGE_CHANNEL,u.id)
+            await c.ban_chat_member(Config.STORAGE_CHANNEL,u.id); await c.unban_chat_member(Config.STORAGE_CHANNEL,u.id)
     except Exception as e: print(f"Gatekeeper Error: {e}")
 
 async def cleanup_channel(c: Client):
-    print("Gatekeeper: Running cleanup..."); allowed={Config.OWNER_ID,c.me.id}
+    allowed={Config.OWNER_ID,c.me.id}
     try:
         async for m in c.get_chat_members(Config.STORAGE_CHANNEL):
-            if m.user.id in allowed: continue
-            if m.status in [enums.ChatMemberStatus.ADMINISTRATOR,enums.ChatMemberStatus.OWNER]: continue
-            try: print(f"Cleanup: Kicking {m.user.id}"); await c.ban_chat_member(Config.STORAGE_CHANNEL,m.user.id); await asyncio.sleep(1)
-            except FloodWait as e: await asyncio.sleep(e.value)
-            except Exception as e: print(f"Cleanup Error: {e}")
+            if m.user.id in allowed or m.status in [enums.ChatMemberStatus.ADMINISTRATOR,enums.ChatMemberStatus.OWNER]: continue
+            await c.ban_chat_member(Config.STORAGE_CHANNEL,m.user.id); await asyncio.sleep(1)
     except Exception as e: print(f"Cleanup Error: {e}")
 
-# =====================================================================================
-# --- FASTAPI WEB SERVER ---
-# =====================================================================================
- 
 @app.get("/")
 async def health_check():
-    """
-    This route provides a 200 OK response for uptime monitors.
-    """
     return {"status": "ok", "message": "Server is healthy and running!"}
 
 @app.get("/show/{unique_id}", response_class=HTMLResponse)
 async def show_page(request: Request, unique_id: str):
-    return templates.TemplateResponse(
-        "show.html",
-        {"request": request}
-    )
+    return templates.TemplateResponse("show.html", {"request": request})
 
 @app.get("/api/file/{unique_id}", response_class=JSONResponse)
 async def get_file_details_api(request: Request, unique_id: str):
     message_id = await db.get_link(unique_id)
-    if not message_id:
-        raise HTTPException(status_code=404, detail="Link expired or invalid.")
+    if not message_id: raise HTTPException(404, "Link expired.")
     main_bot = multi_clients.get(0)
-    if not main_bot:
-        raise HTTPException(status_code=503, detail="Bot is not ready.")
     try:
         message = await main_bot.get_messages(Config.STORAGE_CHANNEL, message_id)
-    except Exception:
-        raise HTTPException(status_code=404, detail="File not found on Telegram.")
-    media = message.document or message.video or message.audio
-    if not media:
-        raise HTTPException(status_code=404, detail="Media not found in the message.")
-    file_name = media.file_name or "file"
-    safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
-    mime_type = media.mime_type or "application/octet-stream"
-    response_data = {
-        "file_name": mask_filename(file_name),
-        "file_size": get_readable_file_size(media.file_size),
-        "is_media": mime_type.startswith(("video", "audio")),
-        "direct_dl_link": f"{Config.BASE_URL}/dl/{message_id}/{safe_file_name}",
-        "mx_player_link": f"intent:{Config.BASE_URL}/dl/{message_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={mime_type};end",
-        "vlc_player_link": f"intent:{Config.BASE_URL}/dl/{message_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={mime_type};package=org.videolan.vlc;end"
-    }
-    return response_data
+        media = message.document or message.video or message.audio
+        file_name = media.file_name or "file"
+        safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '.', '_', '-')).rstrip()
+        mime_type = media.mime_type or "application/octet-stream"
+        return {
+            "file_name": mask_filename(file_name), "file_size": get_readable_file_size(media.file_size),
+            "is_media": mime_type.startswith(("video", "audio")),
+            "direct_dl_link": f"{Config.BASE_URL}/dl/{message_id}/{safe_file_name}",
+            "mx_player_link": f"intent:{Config.BASE_URL}/dl/{message_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={mime_type};end",
+            "vlc_player_link": f"intent:{Config.BASE_URL}/dl/{message_id}/{safe_file_name}#Intent;action=android.intent.action.VIEW;type={mime_type};package=org.videolan.vlc;end"
+        }
+    except Exception: raise HTTPException(404, "File not found.")
 
 class ByteStreamer:
     def __init__(self,c:Client):self.client=c
@@ -342,31 +259,17 @@ class ByteStreamer:
 async def stream_media(r:Request,mid:int,fname:str):
     if not work_loads: raise HTTPException(503)
     client_id = min(work_loads, key=work_loads.get)
-    c = multi_clients.get(client_id)
-    if not c: raise HTTPException(503)
-    
-    tc=class_cache.get(c) or ByteStreamer(c);class_cache[c]=tc
+    c = multi_clients.get(client_id); tc=class_cache.get(c) or ByteStreamer(c); class_cache[c]=tc
     try:
-        msg=await c.get_messages(Config.STORAGE_CHANNEL,mid);m=msg.document or msg.video or msg.audio
-        if not m or msg.empty:raise FileNotFoundError
-        fid=FileId.decode(m.file_id);fsize=m.file_size;rh=r.headers.get("Range","");fb,ub=0,fsize-1
+        msg=await c.get_messages(Config.STORAGE_CHANNEL,mid); m=msg.document or msg.video or msg.audio
+        fid=FileId.decode(m.file_id); fsize=m.file_size; rh=r.headers.get("Range",""); fb,ub=0,fsize-1
         if rh:
-            rps=rh.replace("bytes=","").split("-");fb=int(rps[0])
-            if len(rps)>1 and rps[1]:ub=int(rps[1])
-        if(ub>=fsize)or(fb<0):raise HTTPException(416)
-        rl=ub-fb+1;cs=1024*1024;off=(fb//cs)*cs;fc=fb-off;lc=(ub%cs)+1;pc=math.ceil(rl/cs)
-        body=tc.yield_file(fid,client_id,off,fc,lc,pc,cs);sc=206 if rh else 200
-        hdrs={"Content-Type":m.mime_type or "application/octet-stream","Accept-Ranges":"bytes","Content-Disposition":f'inline; filename="{m.file_name}"',"Content-Length":str(rl)}
-        if rh:hdrs["Content-Range"]=f"bytes {fb}-{ub}/{fsize}"
-        return StreamingResponse(body,status_code=sc,headers=hdrs)
-    except FileNotFoundError:raise HTTPException(404)
-    except Exception:print(traceback.format_exc());raise HTTPException(500)
-
-# =====================================================================================
-# --- MAIN EXECUTION BLOCK ---
-# =====================================================================================
+            rps=rh.replace("bytes=","").split("-"); fb=int(rps[0])
+            if len(rps)>1 and rps[1]: ub=int(rps[1])
+        rl=ub-fb+1; cs=1024*1024; off=(fb//cs)*cs; fc=fb-off; lc=(ub%cs)+1; pc=math.ceil(rl/cs)
+        return StreamingResponse(tc.yield_file(fid,client_id,off,fc,lc,pc,cs),status_code=206 if rh else 200, headers={"Content-Type":m.mime_type or "application/octet-stream","Accept-Ranges":"bytes","Content-Disposition":f'inline; filename="{m.file_name}"',"Content-Length":str(rl)})
+    except Exception: raise HTTPException(500)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    # Log level ko "info" rakho taaki hamara filter kaam kar sake
-    uvicorn.run("app:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), log_level="info")
+                         
