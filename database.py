@@ -1,4 +1,4 @@
-# database.py (UPDATED VERSION FOR AUTO-EDIT & SHORTENER)
+# database.py (FINAL UPDATED VERSION)
 
 import motor.motor_asyncio
 from config import Config
@@ -11,7 +11,7 @@ class Database:
         self.channels = None
         self.settings = None
         if not Config.DATABASE_URL:
-            print("WARNING: DATABASE_URL not set. Features may not work correctly.")
+            print("WARNING: DATABASE_URL not set. Features like channel edit and shortener will not work.")
 
     async def connect(self):
         """Database se connection banata hai aur collections initialize karta hai."""
