@@ -158,9 +158,13 @@ async def channel_handler(client, m):
         await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Download:** {final_link}")
     except: pass
 
-@app.get("/")
-async def health(): return {"status": "ok"}
+# --- HEALTH CHECK FIX FOR UPTIME ROBOT ---
+@app.api_route("/", methods=["GET", "POST", "HEAD"])
+async def health(request: Request):
+    return {"status": "ok", "method": request.method}
+# -----------------------------------------
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
                                    
