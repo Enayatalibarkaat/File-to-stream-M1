@@ -19,6 +19,11 @@ STRIP_TOKENS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+SCREENSHOT_COUNT = 7
+MIN_SCREENSHOT_COUNT = 6
+SCREENSHOT_WORKERS = 2
+DOWNLOAD_RETRIES = 3
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -44,6 +49,11 @@ multi_clients = {}
 work_loads = {}
 class_cache = {}
 screenshot_locks = {}
+screenshot_semaphore = asyncio.Semaphore(SCREENSHOT_WORKERS)
+
+
+def log_event(message: str):
+    print(f"[bot] {message}")
 
 
 async def start_client(client_id, bot_token):
@@ -97,6 +107,43 @@ def extract_movie_key(file_name: str, caption: str = "") -> str:
     return source[:120] or "unknown_movie"
 
 
+def infer_quality_from_media(media_obj) -> int:
+    if not media_obj:
+        return 0
+    h = getattr(media_obj, "height", 0) or 0
+    if h >= 2000:
+        return 2160
+    if h >= 1300:
+        return 1440
+    if h >= 900:
+        return 1080
+    if h >= 650:
+        return 720
+    if h >= 450:
+        return 480
+    if h >= 320:
+        return 360
+    if h > 0:
+        return 240
+    return 0
+
+
+def should_refresh_screenshots(existing_doc, new_quality: int, new_size: int) -> bool:
+    if not existing_doc:
+        return True
+    existing_q = int(existing_doc.get("best_quality", 0) or 0)
+    existing_links = existing_doc.get("screenshot_links", [])
+    existing_size = int(existing_doc.get("source_file_size", 0) or 0)
+
+    if len(existing_links) < MIN_SCREENSHOT_COUNT:
+        return True
+    if new_quality > existing_q:
+        return True
+    if new_quality == existing_q and new_size > existing_size:
+        return True
+    return False
+
+
 def get_video_duration_seconds(video_path: str) -> float:
     ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
     result = subprocess.run(
@@ -132,6 +179,7 @@ def capture_screenshots(video_path: str, output_dir: str, count: int = 7):
         out_file = os.path.join(output_dir, f"screenshot_{idx}.jpg")
         cmd = [
             ffmpeg_bin,
+            "-loglevel", "error",
             "-ss", f"{ts:.3f}",
             "-i", video_path,
             "-frames:v", "1",
@@ -139,7 +187,7 @@ def capture_screenshots(video_path: str, output_dir: str, count: int = 7):
             "-y",
             out_file,
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         if result.returncode == 0 and os.path.exists(out_file) and os.path.getsize(out_file) > 0:
             saved.append(out_file)
 
@@ -148,62 +196,84 @@ def capture_screenshots(video_path: str, output_dir: str, count: int = 7):
 
 async def generate_and_store_screenshots(media: Message, storage_message_id: int):
     media_obj = media.document or media.video or media.audio
-    name_for_key = media_obj.file_name if media_obj else ""
-    cap_text = media.caption.html if media.caption else ""
-    movie_key = extract_movie_key(name_for_key, cap_text)
-    quality = max(extract_quality(name_for_key), extract_quality(cap_text))
-    if quality <= 0:
-        print(f"[screenshots] Skipped: quality not found for message {storage_message_id}")
+    if not media_obj:
+        log_event(f"screenshots skipped: no media object for message {storage_message_id}")
         return
 
+    name_for_key = media_obj.file_name if getattr(media_obj, "file_name", None) else ""
+    cap_text = media.caption.html if media.caption else ""
+    movie_key = extract_movie_key(name_for_key, cap_text)
+
+    text_quality = max(extract_quality(name_for_key), extract_quality(cap_text))
+    media_quality = infer_quality_from_media(media_obj)
+    quality = max(text_quality, media_quality)
+    if quality <= 0:
+        log_event(f"screenshots skipped: quality not found for message {storage_message_id}")
+        return
+
+    source_file_size = int(getattr(media_obj, "file_size", 0) or 0)
     lock = screenshot_locks.setdefault(movie_key, asyncio.Lock())
-    async with lock:
-        try:
-            existing = await db.get_movie_screenshots(movie_key)
-            existing_q = int(existing.get("best_quality", 0)) if existing else 0
-            existing_links = existing.get("screenshot_links", []) if existing else []
-            if existing_q >= quality and len(existing_links) >= 6:
-                print(f"[screenshots] Skipped: existing quality {existing_q} >= {quality} for '{movie_key}'")
-                return
 
-            storage_msg = await bot.get_messages(Config.STORAGE_CHANNEL, storage_message_id)
-            storage_media = storage_msg.document or storage_msg.video or storage_msg.audio
-            if not storage_media:
-                print(f"[screenshots] Skipped: storage media missing for message {storage_message_id}")
-                return
-
-            with tempfile.TemporaryDirectory(prefix="shots_") as tmpdir:
-                source_file = os.path.join(tmpdir, "source_video")
-                await bot.download_media(storage_msg, file_name=source_file)
-
-                paths = await asyncio.to_thread(capture_screenshots, source_file, tmpdir, 7)
-                if len(paths) < 6:
-                    print(f"[screenshots] Skipped: only {len(paths)} screenshots captured for '{movie_key}'")
+    async with screenshot_semaphore:
+        async with lock:
+            try:
+                existing = await db.get_movie_screenshots(movie_key)
+                if not should_refresh_screenshots(existing, quality, source_file_size):
+                    log_event(f"screenshots skipped: existing set is better/equal for '{movie_key}'")
                     return
 
-                screenshot_links = []
-                for i, p in enumerate(paths, start=1):
-                    sent_img = await bot.send_document(
-                        chat_id=Config.STORAGE_CHANNEL,
-                        document=p,
-                        file_name=f"{movie_key.replace(' ', '_')}_{quality}p_{i}.jpg",
-                        caption=f"Screenshot {i} | {movie_key} | {quality}p",
-                    )
-                    img_name = f"{movie_key.replace(' ', '_')}_{quality}p_{i}.jpg"
-                    screenshot_links.append(f"{Config.BASE_URL}/dl/{sent_img.id}/{img_name}")
+                storage_msg = await bot.get_messages(Config.STORAGE_CHANNEL, storage_message_id)
+                storage_media = storage_msg.document or storage_msg.video or storage_msg.audio
+                if not storage_media:
+                    log_event(f"screenshots skipped: storage media missing for message {storage_message_id}")
+                    return
 
-            payload = {
-                "movie_key": movie_key,
-                "best_quality": quality,
-                "source_message_id": storage_message_id,
-                "screenshot_links": screenshot_links,
-                "updatedAt": datetime.now(timezone.utc).isoformat(),
-            }
-            await db.upsert_movie_screenshots(movie_key, payload)
-            print(f"[screenshots] Saved {len(screenshot_links)} screenshots for '{movie_key}' ({quality}p)")
-        except Exception:
-            print(f"[screenshots] Error for '{movie_key}'")
-            traceback.print_exc()
+                with tempfile.TemporaryDirectory(prefix="shots_") as tmpdir:
+                    source_file = os.path.join(tmpdir, "source_video")
+
+                    downloaded = False
+                    for attempt in range(1, DOWNLOAD_RETRIES + 1):
+                        try:
+                            await bot.download_media(storage_msg, file_name=source_file)
+                            downloaded = True
+                            break
+                        except Exception as download_error:
+                            log_event(f"download retry {attempt}/{DOWNLOAD_RETRIES} failed for '{movie_key}': {download_error}")
+                            await asyncio.sleep(1)
+
+                    if not downloaded:
+                        log_event(f"screenshots failed: could not download source for '{movie_key}'")
+                        return
+
+                    paths = await asyncio.to_thread(capture_screenshots, source_file, tmpdir, SCREENSHOT_COUNT)
+                    if len(paths) < MIN_SCREENSHOT_COUNT:
+                        log_event(f"screenshots skipped: only {len(paths)} captured for '{movie_key}'")
+                        return
+
+                    screenshot_links = []
+                    for i, p in enumerate(paths, start=1):
+                        sent_img = await bot.send_document(
+                            chat_id=Config.STORAGE_CHANNEL,
+                            document=p,
+                            file_name=f"{movie_key.replace(' ', '_')}_{quality}p_{i}.jpg",
+                            caption=f"Screenshot {i} | {movie_key} | {quality}p",
+                        )
+                        img_name = f"{movie_key.replace(' ', '_')}_{quality}p_{i}.jpg"
+                        screenshot_links.append(f"{Config.BASE_URL}/dl/{sent_img.id}/{img_name}")
+
+                payload = {
+                    "movie_key": movie_key,
+                    "best_quality": quality,
+                    "source_message_id": storage_message_id,
+                    "source_file_size": source_file_size,
+                    "screenshot_links": screenshot_links,
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.upsert_movie_screenshots(movie_key, payload)
+                log_event(f"screenshots saved: {len(screenshot_links)} for '{movie_key}' ({quality}p)")
+            except Exception:
+                log_event(f"screenshots error for '{movie_key}'")
+                traceback.print_exc()
 
 
 @bot.on_message(filters.command("start") & filters.private)
@@ -244,6 +314,19 @@ async def set_short_cmd(client, m):
 async def del_short_cmd(client, m):
     await db.del_shortener()
     await m.reply("❌ Shortener Deleted!")
+
+
+@bot.on_message(filters.command("status") & filters.user(Config.OWNER_ID))
+async def status_cmd(client, m):
+    allowed = "configured" if Config.STORAGE_CHANNEL else "missing"
+    shortener = await db.get_shortener()
+    await m.reply_text(
+        "🧩 **Bot Status**\n"
+        f"- Storage channel: {allowed} (`{Config.STORAGE_CHANNEL}`)\n"
+        f"- Base URL: `{Config.BASE_URL or 'missing'}`\n"
+        f"- Shortener: `{'enabled' if shortener else 'disabled'}`\n"
+        f"- Screenshot workers: `{SCREENSHOT_WORKERS}`"
+    )
 
 
 class ByteStreamer:
@@ -357,6 +440,7 @@ async def private_handler(_, m):
 @bot.on_message(filters.channel & (filters.document | filters.video | filters.audio))
 async def channel_handler(client, m):
     if not await db.is_channel_allowed(m.chat.id):
+        log_event(f"channel {m.chat.id} skipped: not in allowed list")
         return
     try:
         sent = await m.copy(chat_id=Config.STORAGE_CHANNEL)
@@ -367,7 +451,10 @@ async def channel_handler(client, m):
         await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Download:** {final_link}")
 
         if m.video or (m.document and (media.mime_type or "").startswith("video/")):
+            log_event(f"channel {m.chat.id}: scheduling screenshots for message {sent.id}")
             asyncio.create_task(generate_and_store_screenshots(m, sent.id))
+        else:
+            log_event(f"channel {m.chat.id}: media is not video for message {sent.id}")
     except Exception:
         print("[channel_handler] Error while processing channel media")
         traceback.print_exc()
