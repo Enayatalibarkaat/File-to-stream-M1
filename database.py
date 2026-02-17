@@ -9,6 +9,7 @@ class Database:
         self.links = None
         self.channels = None
         self.settings = None
+        self.movie_screenshots = None
 
     async def connect(self):
         if Config.DATABASE_URL:
@@ -17,6 +18,7 @@ class Database:
             self.links = self.db["links"]
             self.channels = self.db["channels"]
             self.settings = self.db["settings"]
+            self.movie_screenshots = self.db["movie_screenshots"]
             print("✅ Database Connected!")
 
     async def save_link(self, unique_id, message_id):
@@ -50,5 +52,18 @@ class Database:
 
     async def del_shortener(self):
         if self.settings is not None: await self.settings.delete_one({'_id': 'shortener_config'})
+
+    async def get_movie_screenshots(self, movie_key):
+        if self.movie_screenshots is not None:
+            return await self.movie_screenshots.find_one({'_id': movie_key})
+        return None
+
+    async def upsert_movie_screenshots(self, movie_key, payload):
+        if self.movie_screenshots is not None:
+            await self.movie_screenshots.update_one(
+                {'_id': movie_key},
+                {'$set': payload},
+                upsert=True
+            )
 
 db = Database()
