@@ -6,3 +6,4 @@ python-magic
 motor
 httpx
 jinja2
+opencv-python-headless
