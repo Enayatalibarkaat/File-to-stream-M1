@@ -1,8 +1,8 @@
-import os, asyncio, traceback, uvicorn, re, httpx, urllib.parse, math, tempfile
+import os, asyncio, traceback, uvicorn, re, httpx, urllib.parse, math, tempfile, subprocess
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
-import cv2
+import imageio_ffmpeg
 from pyrogram import Client, filters, raw
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.file_id import FileId
@@ -52,7 +52,7 @@ async def start_client(client_id, bot_token):
         work_loads[client_id] = 0
         multi_clients[client_id] = client
     except Exception:
-        pass
+        traceback.print_exc()
 
 
 async def initialize_clients():
@@ -97,38 +97,52 @@ def extract_movie_key(file_name: str, caption: str = "") -> str:
     return source[:120] or "unknown_movie"
 
 
+def get_video_duration_seconds(video_path: str) -> float:
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    result = subprocess.run(
+        [ffmpeg_bin, "-i", video_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    output = result.stderr or ""
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", output)
+    if not match:
+        return 0.0
+    h, m, sec = match.groups()
+    return int(h) * 3600 + int(m) * 60 + float(sec)
+
+
 def capture_screenshots(video_path: str, output_dir: str, count: int = 7):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
+    ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+    duration = get_video_duration_seconds(video_path)
+    if duration <= 0:
         return []
 
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    if frame_count <= 0:
-        cap.release()
-        return []
-
-    start = int(frame_count * 0.10)
-    end = int(frame_count * 0.90)
+    start = duration * 0.10
+    end = duration * 0.90
     if end <= start:
-        cap.release()
         return []
 
-    step = max((end - start) // count, 1)
+    step = (end - start) / count
     saved = []
-    current = start
-    idx = 1
 
-    while idx <= count and current < end:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, current)
-        ok, frame = cap.read()
-        if ok and frame is not None:
-            out_file = os.path.join(output_dir, f"screenshot_{idx}.jpg")
-            cv2.imwrite(out_file, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+    for idx in range(1, count + 1):
+        ts = start + (idx - 1) * step
+        out_file = os.path.join(output_dir, f"screenshot_{idx}.jpg")
+        cmd = [
+            ffmpeg_bin,
+            "-ss", f"{ts:.3f}",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-q:v", "3",
+            "-y",
+            out_file,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode == 0 and os.path.exists(out_file) and os.path.getsize(out_file) > 0:
             saved.append(out_file)
-            idx += 1
-        current += step
 
-    cap.release()
     return saved
 
 
@@ -355,7 +369,8 @@ async def channel_handler(client, m):
         if m.video or (m.document and (media.mime_type or "").startswith("video/")):
             asyncio.create_task(generate_and_store_screenshots(m, sent.id))
     except Exception:
-        pass
+        print("[channel_handler] Error while processing channel media")
+        traceback.print_exc()
 
 
 @app.get("/screenshots/{movie_key}")
