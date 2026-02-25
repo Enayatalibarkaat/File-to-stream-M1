@@ -21,7 +21,7 @@ from pella_commands import get_handlers
 load_dotenv()
 
 # --- ENV ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("PELLA_BOT_TOKEN")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 MONGODB_URI = os.getenv("MONGODB_URI")
 DB = os.getenv("MONGO_DB_NAME", "moviesdb")
