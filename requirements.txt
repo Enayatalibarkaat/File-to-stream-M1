@@ -1,9 +1,15 @@
+# [span_0](start_span)Render Bot (File-to-stream) Libraries[span_0](end_span)
 fastapi[standard]
 pyrogram
 tgcrypto
-python-dotenv
 python-magic
 motor
 httpx
 jinja2
 imageio-ffmpeg
+
+# [span_1](start_span)Pella Bot (TMDB/Cleaning) Libraries[span_1](end_span)
+python-telegram-bot==20.5
+pymongo==4.3.3
+requests==2.31.0
+python-dotenv==1.0.0
