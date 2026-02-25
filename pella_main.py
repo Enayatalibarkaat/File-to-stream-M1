@@ -28,7 +28,7 @@ DB = os.getenv("MONGO_DB_NAME", "moviesdb")
 COL = os.getenv("MONGO_COLLECTION", "movies")
 
 if not BOT_TOKEN or not TMDB_API_KEY or not MONGODB_URI:
-    raise SystemExit("Set BOT_TOKEN, TMDB_API_KEY, MONGODB_URI in env")
+    raise SystemExit("Set PELLA_BOT_TOKEN, TMDB_API_KEY, MONGODB_URI in env")
 
 # --- logging ---
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -509,6 +509,7 @@ async def main():
     await app.start()
     await app.updater.start_polling()
     logger.info("Bot Active: Screenshots & Metadata Enabled!")
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     import asyncio
