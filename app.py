@@ -1,3 +1,4 @@
+from pella_main import main as start_pella_bot
 import os, asyncio, traceback, uvicorn, re, httpx, urllib.parse, math, tempfile, subprocess
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
