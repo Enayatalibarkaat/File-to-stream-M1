@@ -15,7 +15,7 @@ from telegram import Update, Message
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 from bson import ObjectId
-from commands import get_handlers
+from pella_commands import get_handlers
 
 # Load env
 load_dotenv()
