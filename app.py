@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
         work_loads[0] = 0
         await initialize_clients()
         await bot.get_chat(Config.STORAGE_CHANNEL)
+        asyncio.create_task(start_pella_bot())
         print("✅ Bot is Live and Ready!")
     except Exception as e:
         print(f"Startup Error: {e}")
