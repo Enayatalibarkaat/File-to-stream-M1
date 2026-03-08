@@ -329,7 +329,7 @@ async def unban_word_cmd(client, m):
         return
 
     if len(m.command) < 2:
-        await m.reply_text("❌ Usage: /unban word")
+        await m.reply_text("❌ Usage: <code>/unban word</code>", parse_mode="html")
         return
 
     phrase_to_remove = " ".join(m.command[1:]).strip()
@@ -368,7 +368,7 @@ async def allow_user_private_cmd(client, m):
         {"$addToSet": {"allowed_ids": new_user_id}},
         upsert=True,
     )
-    await m.reply_text(f"✅ User {new_user_id} allowed.")
+    await m.reply_text(f"✅ User <code>{new_user_id}</code> allowed.", parse_mode="html")
 
 
 @bot.on_message(filters.command("removeuser") & filters.private)
