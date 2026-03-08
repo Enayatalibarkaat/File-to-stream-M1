@@ -297,7 +297,7 @@ async def ban_word_cmd(client, m):
         return
 
     if len(m.command) < 2:
-        await m.reply_text("❌ Please provide a word.\nUsage: <code>/ban word</code>", parse_mode="html")
+        await m.reply_text("❌ Please provide a word.\nUsage: /ban word")
         return
 
     full_input = " ".join(m.command[1:]).strip()
@@ -309,7 +309,7 @@ async def ban_word_cmd(client, m):
 
         items = doc["items"]
         preview = "\n".join([f"• {item}" for item in items])
-        await m.reply_text(f"🚫 <b>Current Banned Items ({len(items)}):</b>\n\n{preview}", parse_mode="html")
+        await m.reply_text(f"🚫 Current Banned Items ({len(items)}):\n\n{preview}")
         return
 
     normalized_input = normalize_text(full_input)
@@ -318,10 +318,7 @@ async def ban_word_cmd(client, m):
         {"$addToSet": {"items": normalized_input}},
         upsert=True,
     )
-    await m.reply_text(
-        f"🚫 <b>Banned Successfully!</b>\n\nOriginal: {full_input}\nSaved as: <code>{normalized_input}</code>",
-        parse_mode="html",
-    )
+    await m.reply_text(f"🚫 Banned Successfully!\n\nOriginal: {full_input}\nSaved as: {normalized_input}")
 
 
 @bot.on_message(filters.command("unban") & filters.private)
@@ -344,9 +341,9 @@ async def unban_word_cmd(client, m):
     )
 
     if result.modified_count > 0:
-        await m.reply_text(f"✅ Unbanned: <code>{phrase_to_remove}</code>", parse_mode="html")
+        await m.reply_text(f"✅ Unbanned: {phrase_to_remove}")
     else:
-        await m.reply_text(f"⚠️ Item not found in list: <code>{phrase_to_remove}</code>", parse_mode="html")
+        await m.reply_text(f"⚠️ Item not found in list: {phrase_to_remove}")
 
 
 @bot.on_message(filters.command("allowuser") & filters.private)
@@ -357,7 +354,7 @@ async def allow_user_private_cmd(client, m):
         return
 
     if len(m.command) < 2:
-        await m.reply_text("Usage: <code>/allowuser 123456</code>", parse_mode="html")
+        await m.reply_text("Usage: /allowuser 123456")
         return
 
     try:
@@ -382,7 +379,7 @@ async def remove_user_private_cmd(client, m):
         return
 
     if len(m.command) < 2:
-        await m.reply_text("Usage: <code>/removeuser 123456</code>", parse_mode="html")
+        await m.reply_text("Usage: /removeuser 123456")
         return
 
     try:
@@ -396,7 +393,7 @@ async def remove_user_private_cmd(client, m):
         {"$pull": {"allowed_ids": target_id}},
         upsert=True,
     )
-    await m.reply_text(f"🚫 User <code>{target_id}</code> removed.", parse_mode="html")
+    await m.reply_text(f"🚫 User {target_id} removed.")
 
 
 @bot.on_message(filters.command("userlist") & filters.private)
@@ -410,8 +407,8 @@ async def user_list_private_cmd(client, m):
         await m.reply_text("📂 No additional users allowed.")
         return
 
-    ids = "\n".join([f"<code>{uid}</code>" for uid in doc["allowed_ids"]])
-    await m.reply_text(f"👥 <b>Allowed Users:</b>\n\n{ids}", parse_mode="html")
+    ids = "\n".join([str(uid) for uid in doc["allowed_ids"]])
+    await m.reply_text(f"👥 Allowed Users:\n\n{ids}")
 
 
 @bot.on_message(filters.command(["add_channel", "remove_channel"]) & filters.user(Config.OWNER_ID))
