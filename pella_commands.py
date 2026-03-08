@@ -6,6 +6,9 @@ from telegram.ext import ContextTypes, CommandHandler
 from pymongo import MongoClient
 import os
 import unicodedata
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- DATABASE CONNECTION ---
 MONGODB_URI = os.getenv("MONGODB_URI")
