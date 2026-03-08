@@ -6,13 +6,17 @@ from telegram.ext import ContextTypes, CommandHandler
 from pymongo import MongoClient
 import os
 import unicodedata
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- DATABASE CONNECTION ---
 MONGODB_URI = os.getenv("MONGODB_URI")
 DB = os.getenv("MONGO_DB_NAME", "moviesdb")
 
-# Get Owner ID from Env
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+# Get Owner ID from Env (safe parse; empty/invalid means "disabled")
+_raw_owner_id = (os.getenv("OWNER_ID") or "").strip()
+OWNER_ID = int(_raw_owner_id) if _raw_owner_id.isdigit() else None
 
 client = MongoClient(MONGODB_URI)
 db = client[DB]
@@ -33,21 +37,25 @@ def normalize_text(text: str) -> str:
 def is_user_allowed(user_id: int) -> bool:
     """
     Checks if the user is the Owner OR in the allowed users list.
+    If OWNER_ID is not configured, allow all users (so commands don't break).
     """
+    if OWNER_ID is None:
+        return True
+
     if user_id == OWNER_ID:
         return True
-    
+
     doc = ban_collection.find_one({"_id": "auth_config"})
     if doc and "allowed_ids" in doc and user_id in doc["allowed_ids"]:
         return True
-    
+
     return False
 
 # --- COMMAND HANDLERS ---
 
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
+
     # Security Check
     if not is_user_allowed(user_id):
         await update.message.reply_text(
@@ -146,7 +154,7 @@ async def unban_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # --- ADMIN COMMANDS ---
 
 async def allow_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+    if OWNER_ID is not None and update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ Only Owner can use this.")
         return
 
@@ -166,7 +174,7 @@ async def allow_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid ID.")
 
 async def remove_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+    if OWNER_ID is not None and update.effective_user.id != OWNER_ID:
         await update.message.reply_text("⛔ Only Owner can use this.")
         return
 
@@ -186,7 +194,7 @@ async def remove_user_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid ID.")
 
 async def user_list_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+    if OWNER_ID is not None and update.effective_user.id != OWNER_ID:
         return
 
     doc = ban_collection.find_one({"_id": "auth_config"})

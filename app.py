@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from config import Config
 from database import db
+from pella_commands import normalize_text, is_user_allowed, ban_collection, OWNER_ID
 
 QUALITY_PATTERN = re.compile(r"(?<!\d)(2160|1440|1080|720|480|360|240)p(?!\d)", re.IGNORECASE)
 STRIP_TOKENS_PATTERN = re.compile(
@@ -286,6 +287,128 @@ async def start_cmd(client, m):
 @bot.on_message(filters.command("help") & filters.private)
 async def help_cmd(client, m):
     await m.reply_text("🚀 **Admin Commands:**\n\n🔹 `/add_channel [ID]`\n🔹 `/set_shortener [API_URL] [API_KEY]`\n🔹 `/del_shortener`")
+
+
+@bot.on_message(filters.command("ban") & filters.private)
+async def ban_word_cmd(client, m):
+    user_id = m.from_user.id if m.from_user else 0
+    if not is_user_allowed(user_id):
+        await m.reply_text("⛔ You are not authorized. Contact @captain_stive")
+        return
+
+    if len(m.command) < 2:
+        await m.reply_text("❌ Please provide a word.\nUsage: /ban word")
+        return
+
+    full_input = " ".join(m.command[1:]).strip()
+    if full_input.lower() == "list":
+        doc = ban_collection.find_one({"_id": "ban_config"})
+        if not doc or "items" not in doc or not doc["items"]:
+            await m.reply_text("📂 Ban list is empty.")
+            return
+
+        items = doc["items"]
+        preview = "\n".join([f"• {item}" for item in items])
+        await m.reply_text(f"🚫 Current Banned Items ({len(items)}):\n\n{preview}")
+        return
+
+    normalized_input = normalize_text(full_input)
+    ban_collection.update_one(
+        {"_id": "ban_config"},
+        {"$addToSet": {"items": normalized_input}},
+        upsert=True,
+    )
+    await m.reply_text(f"🚫 Banned Successfully!\n\nOriginal: {full_input}\nSaved as: {normalized_input}")
+
+
+@bot.on_message(filters.command("unban") & filters.private)
+async def unban_word_cmd(client, m):
+    user_id = m.from_user.id if m.from_user else 0
+    if not is_user_allowed(user_id):
+        await m.reply_text("⛔ You are not authorized. Contact @captain_stive")
+        return
+
+    if len(m.command) < 2:
+        await m.reply_text("❌ Usage: /unban word")
+        return
+
+    phrase_to_remove = " ".join(m.command[1:]).strip()
+    normalized_phrase = normalize_text(phrase_to_remove)
+    result = ban_collection.update_one(
+        {"_id": "ban_config"},
+        {"$pull": {"items": normalized_phrase}},
+        upsert=True,
+    )
+
+    if result.modified_count > 0:
+        await m.reply_text(f"✅ Unbanned: {phrase_to_remove}")
+    else:
+        await m.reply_text(f"⚠️ Item not found in list: {phrase_to_remove}")
+
+
+@bot.on_message(filters.command("allowuser") & filters.private)
+async def allow_user_private_cmd(client, m):
+    user_id = m.from_user.id if m.from_user else 0
+    if OWNER_ID is not None and user_id != OWNER_ID:
+        await m.reply_text("⛔ Only Owner can use this.")
+        return
+
+    if len(m.command) < 2:
+        await m.reply_text("Usage: /allowuser 123456")
+        return
+
+    try:
+        new_user_id = int(m.command[1])
+    except ValueError:
+        await m.reply_text("❌ Invalid ID.")
+        return
+
+    ban_collection.update_one(
+        {"_id": "auth_config"},
+        {"$addToSet": {"allowed_ids": new_user_id}},
+        upsert=True,
+    )
+    await m.reply_text(f"✅ User {new_user_id} allowed.")
+
+
+@bot.on_message(filters.command("removeuser") & filters.private)
+async def remove_user_private_cmd(client, m):
+    user_id = m.from_user.id if m.from_user else 0
+    if OWNER_ID is not None and user_id != OWNER_ID:
+        await m.reply_text("⛔ Only Owner can use this.")
+        return
+
+    if len(m.command) < 2:
+        await m.reply_text("Usage: /removeuser 123456")
+        return
+
+    try:
+        target_id = int(m.command[1])
+    except ValueError:
+        await m.reply_text("❌ Invalid ID.")
+        return
+
+    ban_collection.update_one(
+        {"_id": "auth_config"},
+        {"$pull": {"allowed_ids": target_id}},
+        upsert=True,
+    )
+    await m.reply_text(f"🚫 User {target_id} removed.")
+
+
+@bot.on_message(filters.command("userlist") & filters.private)
+async def user_list_private_cmd(client, m):
+    user_id = m.from_user.id if m.from_user else 0
+    if OWNER_ID is not None and user_id != OWNER_ID:
+        return
+
+    doc = ban_collection.find_one({"_id": "auth_config"})
+    if not doc or "allowed_ids" not in doc or not doc["allowed_ids"]:
+        await m.reply_text("📂 No additional users allowed.")
+        return
+
+    ids = "\n".join([str(uid) for uid in doc["allowed_ids"]])
+    await m.reply_text(f"👥 Allowed Users:\n\n{ids}")
 
 
 @bot.on_message(filters.command(["add_channel", "remove_channel"]) & filters.user(Config.OWNER_ID))
