@@ -64,18 +64,6 @@ def derive_screenshot_meta(media: Message):
         "is_video": is_video_media(media, media_obj),
     }
 
-VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".m2ts"}
-
-
-def is_video_media(message: Message, media_obj) -> bool:
-    if getattr(message, "video", None):
-        return True
-    mime = (getattr(media_obj, "mime_type", "") or "").lower()
-    if mime.startswith("video/"):
-        return True
-    name = (getattr(media_obj, "file_name", "") or "").lower()
-    return any(name.endswith(ext) for ext in VIDEO_EXTENSIONS)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
