@@ -26,6 +26,43 @@ SCREENSHOT_COUNT = 7
 MIN_SCREENSHOT_COUNT = 6
 SCREENSHOT_WORKERS = 2
 DOWNLOAD_RETRIES = 3
+SCREENSHOT_DEBOUNCE_SECONDS = int(os.environ.get("SCREENSHOT_DEBOUNCE_SECONDS", "90"))
+
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".m2ts"}
+
+
+def is_video_media(message: Message, media_obj) -> bool:
+    if getattr(message, "video", None):
+        return True
+    mime = (getattr(media_obj, "mime_type", "") or "").lower()
+    if mime.startswith("video/"):
+        return True
+    name = (getattr(media_obj, "file_name", "") or "").lower()
+    return any(name.endswith(ext) for ext in VIDEO_EXTENSIONS)
+
+
+def derive_screenshot_meta(media: Message):
+    media_obj = media.document or media.video or media.audio
+    if not media_obj:
+        return None
+
+    name_for_key = media_obj.file_name if getattr(media_obj, "file_name", None) else ""
+    cap_text = media.caption.html if media.caption else ""
+    movie_key = extract_movie_key(name_for_key, cap_text)
+
+    text_quality = max(extract_quality(name_for_key), extract_quality(cap_text))
+    media_quality = infer_quality_from_media(media_obj)
+    quality = max(text_quality, media_quality)
+    if quality <= 0 and is_video_media(media, media_obj):
+        quality = 720
+
+    source_file_size = int(getattr(media_obj, "file_size", 0) or 0)
+    return {
+        "movie_key": movie_key,
+        "quality": quality,
+        "source_file_size": source_file_size,
+        "is_video": is_video_media(media, media_obj),
+    }
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".m2ts"}
 
@@ -66,10 +103,96 @@ work_loads = {}
 class_cache = {}
 screenshot_locks = {}
 screenshot_semaphore = asyncio.Semaphore(SCREENSHOT_WORKERS)
+pending_screenshot_jobs = {}
+pending_screenshot_jobs_lock = asyncio.Lock()
 
 
 def log_event(message: str):
     print(f"[bot] {message}")
+
+
+def _log_task_exception(task: asyncio.Task, label: str):
+    try:
+        exc = task.exception()
+        if exc:
+            log_event(f"{label} failed: {exc}")
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+    except asyncio.CancelledError:
+        log_event(f"{label} cancelled")
+    except Exception as callback_error:
+        log_event(f"{label} callback error: {callback_error}")
+
+
+async def _run_debounced_screenshot_job(movie_key: str):
+    await asyncio.sleep(SCREENSHOT_DEBOUNCE_SECONDS)
+    async with pending_screenshot_jobs_lock:
+        job = pending_screenshot_jobs.pop(movie_key, None)
+
+    if not job:
+        log_event(f"screenshots debounce: no pending job for '{movie_key}'")
+        return
+
+    log_event(
+        f"screenshots debounce: processing '{movie_key}' at {job['quality']}p from message {job['storage_message_id']}"
+    )
+    await generate_and_store_screenshots(
+        job["message"],
+        job["storage_message_id"],
+        movie_key_override=job["movie_key"],
+        quality_override=job["quality"],
+        source_file_size_override=job["source_file_size"],
+    )
+
+
+async def schedule_screenshot_job(media_message: Message, storage_message_id: int):
+    meta = derive_screenshot_meta(media_message)
+    if not meta:
+        log_event(f"screenshots skipped: no media metadata for message {storage_message_id}")
+        return
+
+    if not meta["is_video"]:
+        log_event(f"screenshots skipped: media is not video for message {storage_message_id}")
+        return
+
+    if meta["quality"] <= 0:
+        log_event(f"screenshots skipped: quality not found for message {storage_message_id}")
+        return
+
+    movie_key = meta["movie_key"]
+
+    existing_doc = await db.get_movie_screenshots(movie_key)
+    if has_saved_screenshots(existing_doc):
+        log_event(f"screenshots skipped: already exists for '{movie_key}'")
+        return
+
+    async with pending_screenshot_jobs_lock:
+        existing = pending_screenshot_jobs.get(movie_key)
+        should_replace = (
+            existing is None
+            or meta["quality"] > existing["quality"]
+            or (meta["quality"] == existing["quality"] and meta["source_file_size"] > existing["source_file_size"])
+        )
+
+        if should_replace:
+            pending_screenshot_jobs[movie_key] = {
+                "movie_key": movie_key,
+                "quality": meta["quality"],
+                "source_file_size": meta["source_file_size"],
+                "storage_message_id": storage_message_id,
+                "message": media_message,
+            }
+            log_event(
+                f"screenshots debounce: queued '{movie_key}' => {meta['quality']}p (msg {storage_message_id})"
+            )
+        else:
+            log_event(
+                f"screenshots debounce: kept better queued job for '{movie_key}' ({existing['quality']}p)"
+            )
+
+        if not existing or not existing.get("task") or existing.get("task").done():
+            task = asyncio.create_task(_run_debounced_screenshot_job(movie_key))
+            task.add_done_callback(lambda t: _log_task_exception(t, f"screenshots debounce task {movie_key}"))
+            pending_screenshot_jobs[movie_key]["task"] = task
 
 
 async def start_client(client_id, bot_token):
@@ -159,20 +282,19 @@ def infer_quality_from_media(media_obj) -> int:
     return 0
 
 
+def has_saved_screenshots(existing_doc) -> bool:
+    if not existing_doc:
+        return False
+    links = existing_doc.get("screenshot_links", [])
+    return len(links) >= MIN_SCREENSHOT_COUNT
+
+
 def should_refresh_screenshots(existing_doc, new_quality: int, new_size: int) -> bool:
     if not existing_doc:
         return True
-    existing_q = int(existing_doc.get("best_quality", 0) or 0)
-    existing_links = existing_doc.get("screenshot_links", [])
-    existing_size = int(existing_doc.get("source_file_size", 0) or 0)
-
-    if len(existing_links) < MIN_SCREENSHOT_COUNT:
-        return True
-    if new_quality > existing_q:
-        return True
-    if new_quality == existing_q and new_size > existing_size:
-        return True
-    return False
+    if has_saved_screenshots(existing_doc):
+        return False
+    return True
 
 
 def get_video_duration_seconds(video_path: str) -> float:
@@ -225,32 +347,44 @@ def capture_screenshots(video_path: str, output_dir: str, count: int = 7):
     return saved
 
 
-async def generate_and_store_screenshots(media: Message, storage_message_id: int):
-    media_obj = media.document or media.video or media.audio
-    if not media_obj:
-        log_event(f"screenshots skipped: no media object for message {storage_message_id}")
-        return
+async def generate_and_store_screenshots(
+    media: Message,
+    storage_message_id: int,
+    movie_key_override: str = "",
+    quality_override: int = 0,
+    source_file_size_override: int = 0,
+):
+    log_event(f"screenshots task started for message {storage_message_id}")
+    try:
+        media_obj = media.document or media.video or media.audio
+        if not media_obj and not (movie_key_override and quality_override > 0):
+            log_event(f"screenshots skipped: no media object for message {storage_message_id}")
+            return
 
-    name_for_key = media_obj.file_name if getattr(media_obj, "file_name", None) else ""
-    cap_text = media.caption.html if media.caption else ""
-    movie_key = extract_movie_key(name_for_key, cap_text)
+        if movie_key_override and quality_override > 0:
+            movie_key = movie_key_override
+            quality = int(quality_override)
+            source_file_size = int(source_file_size_override or 0)
+        else:
+            name_for_key = media_obj.file_name if getattr(media_obj, "file_name", None) else ""
+            cap_text = media.caption.html if media.caption else ""
+            movie_key = extract_movie_key(name_for_key, cap_text)
 
-    text_quality = max(extract_quality(name_for_key), extract_quality(cap_text))
-    media_quality = infer_quality_from_media(media_obj)
-    quality = max(text_quality, media_quality)
-    if quality <= 0 and is_video_media(media, media_obj):
-        quality = 720
-        log_event(f"screenshots quality fallback: defaulted to {quality}p for message {storage_message_id}")
-    if quality <= 0:
-        log_event(f"screenshots skipped: quality not found for message {storage_message_id}")
-        return
+            text_quality = max(extract_quality(name_for_key), extract_quality(cap_text))
+            media_quality = infer_quality_from_media(media_obj)
+            quality = max(text_quality, media_quality)
+            if quality <= 0 and is_video_media(media, media_obj):
+                quality = 720
+                log_event(f"screenshots quality fallback: defaulted to {quality}p for message {storage_message_id}")
+            if quality <= 0:
+                log_event(f"screenshots skipped: quality not found for message {storage_message_id}")
+                return
 
-    source_file_size = int(getattr(media_obj, "file_size", 0) or 0)
-    lock = screenshot_locks.setdefault(movie_key, asyncio.Lock())
+            source_file_size = int(getattr(media_obj, "file_size", 0) or 0)
+        lock = screenshot_locks.setdefault(movie_key, asyncio.Lock())
 
-    async with screenshot_semaphore:
-        async with lock:
-            try:
+        async with screenshot_semaphore:
+            async with lock:
                 existing = await db.get_movie_screenshots(movie_key)
                 if not should_refresh_screenshots(existing, quality, source_file_size):
                     log_event(f"screenshots skipped: existing set is better/equal for '{movie_key}'")
@@ -309,9 +443,9 @@ async def generate_and_store_screenshots(media: Message, storage_message_id: int
                 }
                 await db.upsert_movie_screenshots(movie_key, payload)
                 log_event(f"screenshots saved: {len(screenshot_links)} for '{movie_key}' ({quality}p)")
-            except Exception:
-                log_event(f"screenshots error for '{movie_key}'")
-                traceback.print_exc()
+    except Exception:
+        log_event(f"screenshots fatal error for message {storage_message_id}")
+        traceback.print_exc()
 
 
 @bot.on_message(filters.command("start") & filters.private)
@@ -621,8 +755,9 @@ async def channel_handler(client, m):
         await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Download:** {final_link}")
 
         if is_video_media(m, media):
-            log_event(f"channel {m.chat.id}: scheduling screenshots for message {sent.id}")
-            asyncio.create_task(generate_and_store_screenshots(m, sent.id))
+            log_event(f"channel {m.chat.id}: scheduling screenshots candidate for message {sent.id}")
+            task = asyncio.create_task(schedule_screenshot_job(m, sent.id))
+            task.add_done_callback(lambda t: _log_task_exception(t, f"screenshots scheduler task {sent.id}"))
         else:
             log_event(f"channel {m.chat.id}: media is not video for message {sent.id}")
     except Exception:
