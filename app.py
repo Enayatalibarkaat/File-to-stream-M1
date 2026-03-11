@@ -1,5 +1,6 @@
 from pella_main import main as start_pella_bot
 import os, asyncio, traceback, uvicorn, re, httpx, urllib.parse, math, tempfile, subprocess
+from urllib.parse import urlsplit, urlunsplit
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,18 @@ SCREENSHOT_COUNT = 7
 MIN_SCREENSHOT_COUNT = 6
 SCREENSHOT_WORKERS = 2
 DOWNLOAD_RETRIES = 3
+
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".m2ts"}
+
+
+def is_video_media(message: Message, media_obj) -> bool:
+    if getattr(message, "video", None):
+        return True
+    mime = (getattr(media_obj, "mime_type", "") or "").lower()
+    if mime.startswith("video/"):
+        return True
+    name = (getattr(media_obj, "file_name", "") or "").lower()
+    return any(name.endswith(ext) for ext in VIDEO_EXTENSIONS)
 
 
 @asynccontextmanager
@@ -92,6 +105,21 @@ async def get_shortlink(url):
         pass
     return url
 
+
+
+
+def to_preview_link(link: str) -> str:
+    if not link:
+        return link
+    try:
+        parts = urlsplit(link)
+        path = parts.path or ""
+        if "/dl/" in path:
+            path = path.replace("/dl/", "/view/", 1)
+            return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    except Exception:
+        pass
+    return link.replace("/dl/", "/view/", 1)
 
 def extract_quality(text: str) -> int:
     if not text:
@@ -210,6 +238,9 @@ async def generate_and_store_screenshots(media: Message, storage_message_id: int
     text_quality = max(extract_quality(name_for_key), extract_quality(cap_text))
     media_quality = infer_quality_from_media(media_obj)
     quality = max(text_quality, media_quality)
+    if quality <= 0 and is_video_media(media, media_obj):
+        quality = 720
+        log_event(f"screenshots quality fallback: defaulted to {quality}p for message {storage_message_id}")
     if quality <= 0:
         log_event(f"screenshots skipped: quality not found for message {storage_message_id}")
         return
@@ -254,6 +285,7 @@ async def generate_and_store_screenshots(media: Message, storage_message_id: int
                         return
 
                     screenshot_links = []
+                    screenshot_preview_links = []
                     for i, p in enumerate(paths, start=1):
                         sent_img = await bot.send_document(
                             chat_id=Config.STORAGE_CHANNEL,
@@ -263,6 +295,7 @@ async def generate_and_store_screenshots(media: Message, storage_message_id: int
                         )
                         img_name = f"{movie_key.replace(' ', '_')}_{quality}p_{i}.jpg"
                         screenshot_links.append(f"{Config.BASE_URL}/dl/{sent_img.id}/{img_name}")
+                        screenshot_preview_links.append(to_preview_link(screenshot_links[-1]))
 
                 payload = {
                     "movie_key": movie_key,
@@ -270,6 +303,8 @@ async def generate_and_store_screenshots(media: Message, storage_message_id: int
                     "source_message_id": storage_message_id,
                     "source_file_size": source_file_size,
                     "screenshot_links": screenshot_links,
+                    "screenshot_preview_links": screenshot_preview_links,
+                    "screenshots": screenshot_preview_links,
                     "updatedAt": datetime.now(timezone.utc).isoformat(),
                 }
                 await db.upsert_movie_screenshots(movie_key, payload)
@@ -502,8 +537,7 @@ class ByteStreamer:
             work_loads[i] -= 1
 
 
-@app.get("/dl/{mid}/{fname}")
-async def stream(r: Request, mid: int, fname: str):
+async def _stream_media(r: Request, mid: int, fname: str, inline: bool = False):
     if not work_loads:
         raise HTTPException(503)
     cid = min(work_loads, key=work_loads.get)
@@ -528,6 +562,7 @@ async def stream(r: Request, mid: int, fname: str):
         fc = fb - off
         lc = (ub % cs) + 1
         pc = math.ceil(rl / cs)
+        disposition = "inline" if inline else "attachment"
         return StreamingResponse(
             tc.yield_file(fid, cid, off, fc, lc, pc, cs),
             status_code=206 if rh else 200,
@@ -535,11 +570,21 @@ async def stream(r: Request, mid: int, fname: str):
                 "Content-Type": m.mime_type or "application/octet-stream",
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(rl),
-                "Content-Disposition": f'attachment; filename="{fname}"',
+                "Content-Disposition": f'{disposition}; filename="{fname}"',
             },
         )
     except Exception:
         raise HTTPException(404)
+
+
+@app.get("/dl/{mid}/{fname}")
+async def stream(r: Request, mid: int, fname: str):
+    return await _stream_media(r, mid, fname, inline=False)
+
+
+@app.get("/view/{mid}/{fname}")
+async def preview(r: Request, mid: int, fname: str):
+    return await _stream_media(r, mid, fname, inline=True)
 
 
 async def handle_file_upload(message: Message):
@@ -575,7 +620,7 @@ async def channel_handler(client, m):
         cap = m.caption.html if m.caption else f"**{media.file_name}**"
         await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Download:** {final_link}")
 
-        if m.video or (m.document and (media.mime_type or "").startswith("video/")):
+        if is_video_media(m, media):
             log_event(f"channel {m.chat.id}: scheduling screenshots for message {sent.id}")
             asyncio.create_task(generate_and_store_screenshots(m, sent.id))
         else:
@@ -591,10 +636,18 @@ async def get_screenshots(movie_key: str):
     doc = await db.get_movie_screenshots(key)
     if not doc:
         raise HTTPException(404, "Movie screenshots not found")
+    screenshot_links = doc.get("screenshot_links", [])
+    screenshot_preview_links = doc.get("screenshot_preview_links") or [
+        to_preview_link(link)
+        for link in screenshot_links
+    ]
+    screenshots = doc.get("screenshots") or screenshot_preview_links
     return {
         "movie_key": doc.get("movie_key", key),
         "best_quality": doc.get("best_quality", 0),
-        "screenshot_links": doc.get("screenshot_links", []),
+        "screenshot_links": screenshot_links,
+        "screenshot_preview_links": screenshot_preview_links,
+        "screenshots": screenshots,
         "updatedAt": doc.get("updatedAt"),
     }
 
