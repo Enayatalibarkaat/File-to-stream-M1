@@ -27,6 +27,18 @@ MIN_SCREENSHOT_COUNT = 6
 SCREENSHOT_WORKERS = 2
 DOWNLOAD_RETRIES = 3
 
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".m2ts"}
+
+
+def is_video_media(message: Message, media_obj) -> bool:
+    if getattr(message, "video", None):
+        return True
+    mime = (getattr(media_obj, "mime_type", "") or "").lower()
+    if mime.startswith("video/"):
+        return True
+    name = (getattr(media_obj, "file_name", "") or "").lower()
+    return any(name.endswith(ext) for ext in VIDEO_EXTENSIONS)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -226,6 +238,9 @@ async def generate_and_store_screenshots(media: Message, storage_message_id: int
     text_quality = max(extract_quality(name_for_key), extract_quality(cap_text))
     media_quality = infer_quality_from_media(media_obj)
     quality = max(text_quality, media_quality)
+    if quality <= 0 and is_video_media(media, media_obj):
+        quality = 720
+        log_event(f"screenshots quality fallback: defaulted to {quality}p for message {storage_message_id}")
     if quality <= 0:
         log_event(f"screenshots skipped: quality not found for message {storage_message_id}")
         return
@@ -605,7 +620,7 @@ async def channel_handler(client, m):
         cap = m.caption.html if m.caption else f"**{media.file_name}**"
         await client.edit_message_caption(m.chat.id, m.id, f"{cap}\n\n🚀 **Download:** {final_link}")
 
-        if m.video or (m.document and (media.mime_type or "").startswith("video/")):
+        if is_video_media(m, media):
             log_event(f"channel {m.chat.id}: scheduling screenshots for message {sent.id}")
             asyncio.create_task(generate_and_store_screenshots(m, sent.id))
         else:
