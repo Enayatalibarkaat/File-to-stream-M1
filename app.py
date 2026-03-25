@@ -169,6 +169,7 @@ async def schedule_screenshot_job(media_message: Message, storage_message_id: in
         get_quality_priority(meta["quality"]) == get_quality_priority(existing["quality"])
         and meta["source_file_size"] > existing["source_file_size"]
     )
+        )
         if should_replace:
             pending_screenshot_jobs[movie_key] = {
                 "movie_key": movie_key,
