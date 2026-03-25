@@ -27,7 +27,14 @@ MIN_SCREENSHOT_COUNT = 6
 SCREENSHOT_WORKERS = 2
 DOWNLOAD_RETRIES = 3
 SCREENSHOT_DEBOUNCE_SECONDS = int(os.environ.get("SCREENSHOT_DEBOUNCE_SECONDS", "90"))
-
+def get_quality_priority(quality: int) -> int:
+    """720p sabse prefer, phir 1080p, phir 480p"""
+    if quality == 720: return 4
+    if quality == 1080: return 3
+    if quality == 480: return 2
+    if quality == 360: return 1
+    if quality == 2160: return 1  # 4K bahut badi file, low priority
+    return 0
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".flv", ".wmv", ".ts", ".m2ts"}
 
 
@@ -156,11 +163,12 @@ async def schedule_screenshot_job(media_message: Message, storage_message_id: in
     async with pending_screenshot_jobs_lock:
         existing = pending_screenshot_jobs.get(movie_key)
         should_replace = (
-            existing is None
-            or meta["quality"] > existing["quality"]
-            or (meta["quality"] == existing["quality"] and meta["source_file_size"] > existing["source_file_size"])
-        )
-
+    existing is None
+    or get_quality_priority(meta["quality"]) > get_quality_priority(existing["quality"])
+    or (
+        get_quality_priority(meta["quality"]) == get_quality_priority(existing["quality"])
+        and meta["source_file_size"] > existing["source_file_size"]
+    )
         if should_replace:
             pending_screenshot_jobs[movie_key] = {
                 "movie_key": movie_key,
