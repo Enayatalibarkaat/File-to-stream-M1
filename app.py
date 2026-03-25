@@ -18,7 +18,7 @@ from pella_commands import normalize_text, is_user_allowed, ban_collection, OWNE
 
 QUALITY_PATTERN = re.compile(r"(?<!\d)(2160|1440|1080|720|480|360|240)p(?!\d)", re.IGNORECASE)
 STRIP_TOKENS_PATTERN = re.compile(
-    r"\b(2160p|1440p|1080p|720p|480p|360p|240p|x264|x265|hevc|hdrip|webrip|web[- ]?dl|bluray|dvdrip|10bit|8bit|esubs|dual[- ]?audio|amzn|nf|hindi|english|tamil|telugu|malayalam)\b",
+    r"\b(2160p|1440p|1080p|720p|480p|360p|240p|x264|x265|hevc|hdrip|webrip|web[- ]?dl|bluray|dvdrip|brrip|10bit|8bit|esubs|dual[- ]?audio|amzn|nf|hindi|english|tamil|telugu|malayalam|fhd|uhd|org|mov|moviesmod|moviesflix|hollywood|bollywood|movie|movies|full|mkv|mp4|avi)\b|[@&#+*]",
     re.IGNORECASE,
 )
 
